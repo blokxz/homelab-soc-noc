@@ -1,0 +1,56 @@
+# Zabbix 7.0 LTS para el homelab NOC (netbook)
+# Ubicación sugerida: ~/homelab/zabbix/
+# Antes de levantar: cp .env.example .env  y definir POSTGRES_PASSWORD
+# Levantar:    docker compose up -d
+# Borrar todo: docker compose down -v && sudo rm -rf ~/homelab/zabbix
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: zbx-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-zabbix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Definir POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: ${POSTGRES_DB:-zabbix}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+
+  zabbix-server:
+    image: zabbix/zabbix-server-pgsql:alpine-7.0-latest
+    container_name: zbx-server
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      DB_SERVER_HOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-zabbix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Definir POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: ${POSTGRES_DB:-zabbix}
+    ports:
+      - "10051:10051"   # agentes activos (DC01, WS01) se conectan acá
+
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-7.0-latest
+    container_name: zbx-web
+    restart: unless-stopped
+    depends_on:
+      - zabbix-server
+    environment:
+      ZBX_SERVER_HOST: zabbix-server
+      DB_SERVER_HOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-zabbix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Definir POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: ${POSTGRES_DB:-zabbix}
+      PHP_TZ: ${PHP_TZ:-America/Argentina/Buenos_Aires}
+    ports:
+      - "8080:8080"     # interfaz web: http://IP-netbook:8080
+
+  zabbix-agent:
+    image: zabbix/zabbix-agent2:alpine-7.0-latest
+    container_name: zbx-agent
+    hostname: zabbix-agent
+    restart: unless-stopped
+    environment:
+      ZBX_HOSTNAME: Zabbix server
+      ZBX_SERVER_HOST: zabbix-server

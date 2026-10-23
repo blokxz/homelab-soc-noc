@@ -1,0 +1,19 @@
+# Secretos
+.env
+*.env
+!.env.example
+
+# Datos de los contenedores (base de datos de Zabbix)
+zabbix/data/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Discos, ISOs y VMs (nunca al repo)
+*.iso
+*.vmdk
+*.vmx
+*.vmsd
+*.nvram
