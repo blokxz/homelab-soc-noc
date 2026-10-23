@@ -6,6 +6,30 @@ Laboratorio propio que simula la red de una empresa chica para practicar tareas 
 
 ---
 
+## Índice por capítulos
+
+- [Contenido del repositorio](#contenido-del-repositorio)
+- [Objetivos](#objetivos)
+- [Hardware](#hardware)
+- [Arquitectura](#arquitectura)
+  - [Vista isométrica](#vista-isomtrica)
+  - [Máquinas virtuales](#maquinas-virtuales)
+  - [Plan de direcciones](#plan-de-direcciones)
+  - [Segmentación: cómo se separa el lab de la red de casa](#segmentacion-como-se-separa-el-lab-de-la-red-de-casa)
+  - [Política de firewall (FW01)](#politica-de-firewall-fw01)
+  - [Flujos de monitoreo](#flujos-de-monitoreo)
+- [Estado del proyecto](#estado-del-proyecto)
+- [Fase 1 – FW01 (OPNsense)](#fase-1--fw01-opnsense)
+- [Fase 2 – DC01 (Windows Server 2022)](#fase-2--dc01-windows-server-2022)
+- [Fase 3 – WS01 (Windows 11 Enterprise)](#fase-3--ws01-windows-11-enterprise)
+- [Fase 4 – NOC con Zabbix 7.0 LTS](#fase-4--noc-con-zabbix-70-lts)
+- [Operación diaria: apagar y encender el lab](#operacion-diaria-apagar-y-encender-el-lab)
+- [Problemas encontrados y soluciones](#problemas-encontrados-y-soluciones)
+- [Decisiones de diseño](#decisiones-de-diseno)
+- [Próximos pasos](#proximos-pasos)
+
+---
+
 ## Contenido del repositorio
 
 ```
@@ -93,14 +117,14 @@ La separación la hace **FW01 (OPNsense)**, una VM con tres placas de red, cada 
 - **Entrada (casa → lab):** **bloqueada por defecto**. Solo hay dos excepciones, puntuales y documentadas:
   - HTTPS a la GUI de FW01 desde la red de casa (administración).
   - TCP 10050 hacia FW01 **solo desde la IP de Zabbix** (`192.168.1.39`), para el agente pasivo.
-- **Bloqueo de redes privadas en la WAN:** OPNsense lo trae activado porque asume que la WAN da directo a internet. Acá la WAN está dentro de una red privada, así que se desactivó para poder administrarlo (ver problema 5).
+- **Bloqueo de redes privadas en la WAN:** OPNsense lo trae activado porque asume que la WAN da directo a internet. Acá la WAN está dentro de una red privada, así que se desactivó para poder administrarlo.
 - **El controlador de dominio no rutea.** La guía original hacía NAT en el DC con RRAS; acá las funciones están separadas: FW01 maneja el tráfico y DC01 maneja identidades, DNS y DHCP.
 
 **Cómo se verifica el aislamiento:**
 - Si FW01 se apaga, DC01 y WS01 pierden la salida a internet: no hay otro camino.
 - Desde la red de casa, `172.16.0.0/24` no es alcanzable. Por eso Zabbix no puede consultar a DC01 y WS01 directamente y se usan **agentes activos**, que inician la conexión desde adentro.
 
-**¿Por qué una placa por red y no VLANs?** En VMware es más simple, y equivale a un firewall con un puerto físico por red. En producción lo habitual es una sola interfaz con VLANs etiquetadas hacia un switch (*router-on-a-stick*). El concepto es el mismo: redes aisladas que solo se comunican a través de las reglas del firewall.
+**¿Por qué una placa por red y no VLANs?** En VMware es más simple, y equivale a un firewall con un puerto físico por red. En producción lo habitual es una sola interfaz con VLANs etiquetadas hacia un switch.
 
 ### Política de firewall (FW01)
 
@@ -339,7 +363,7 @@ Se usa apagado del sistema operativo, no "Power Off" de VMware, para no corrompe
 - **Aprendizaje:** nunca conectar un firewall recién instalado a una red productiva antes de asignar sus interfaces.
 
 ### 4. Falta de memoria en OPNsense
-- **Síntoma:** `pid … (python3.13) … was killed: failed to reclaim memory` y caída a `Enter full pathname of shell or RETURN for /bin/sh` (modo de usuario único), con errores de `config.inc` en el menú.
+- **Síntoma:** `pid … (python3.13) … was killed: failed to reclaim memory` y caída a `Enter full pathname of shell or RETURN for /bin/sh` (modo de usuario único), con errores de `config.inc` en el arranque.
 - **Causa:** RAM insuficiente asignada a la VM.
 - **Solución:** subir a 2 GB y reinstalar.
 
@@ -360,7 +384,7 @@ Se usa apagado del sistema operativo, no "Power Off" de VMware, para no corrompe
 - **Síntoma:** después de promover DC01, `nslookup dc01.corp.home.arpa` devolvía *Non-existent domain*, aunque `google.com` resolvía bien. La consola DNS no mostraba zonas.
 - **Diagnóstico:** `Get-ADDomain` confirmaba que el dominio existía → el problema era el DNS, no el AD.
 - **Causa:** el servicio DNS arrancó antes de que Active Directory estuviera listo y no cargó las zonas integradas en AD.
-- **Solución:** `Restart-Service DNS` → `Get-DnsServerZone` mostró `corp.home.arpa` y `_msdcs.corp.home.arpa` → `ipconfig /registerdns` y `Restart-Service netlogon` para registrar los registros del DC. La consola gráfica requería cerrarse y abrirse de nuevo para mostrar los cambios.
+- **Solución:** `Restart-Service DNS` → `Get-DnsServerZone` mostró `corp.home.arpa` y `_msdcs.corp.home.arpa` → `ipconfig /registerdns` y `Restart-Service netlogon` para registrar los registros del DC. La consola DNS requirió cerrar y abrir para mostrar los cambios.
 
 ### 8. Usuario de dominio sin poder iniciar sesión en WS01
 - **Síntoma:** *"The user name or password is incorrect"* con `CORP\uprueba`.
@@ -373,7 +397,7 @@ Se usa apagado del sistema operativo, no "Power Off" de VMware, para no corrompe
   - `nc -zv 192.168.1.59 10050` desde la netbook → timeout. `curl -k https://192.168.1.59` → OK, así que la red estaba bien y el problema era puntual del puerto 10050.
   - La regla WAN tenía primero la IP de origen equivocada (`.59` en lugar de `.39`). Corregida, seguía fallando.
   - Como OPNsense descarta en silencio los paquetes a puertos cerrados, un agente que no escucha se ve desde afuera igual que un bloqueo del firewall.
-- **Causa:** en el plugin del agente, **Listen IPs** tenía `192.168.1.39` (la IP de la netbook). Ese campo es la IP **propia de FW01** donde el agente escucha; el agente no podía escuchar en una dirección que no le pertenece.
+- **Causa:** en el plugin del agente, **Listen IPs** tenía `192.168.1.39` (la IP de la netbook). Ese campo es la IP **propia de FW01** donde el agente escucha; el agente no podía escuchar en una dirección que no le pertenecía.
 - **Solución:** *Listen IPs* = `0.0.0.0` y *Zabbix Servers* = `192.168.1.39` (quién tiene permiso para consultar).
 - **Aprendizaje:** distinguir "dónde escucha el servicio" de "quién puede conectarse", y verificar del lado del servidor (servicio y puerto en escucha) antes de culpar al firewall.
 
@@ -381,7 +405,7 @@ Se usa apagado del sistema operativo, no "Power Off" de VMware, para no corrompe
 
 ## Decisiones de diseño
 
-- **OPNsense en lugar de RRAS en el DC:** el controlador de dominio no debería rutear tráfico. Es el equipo más crítico (si cae, cae el dominio) y meterlo en el camino de todo el tráfico suma superficie de ataque. Cada equipo cumple una función: FW01 maneja el tráfico, DC01 las identidades.
+- **OPNsense en lugar de RRAS en el DC:** el controlador de dominio no debería rutear tráfico. Es el equipo más crítico (si cae, cae el dominio) y meterlo en el camino de todo el tráfico suma un punto de fallo. Cada equipo cumple una función: FW01 maneja el tráfico, DC01 las identidades.
 - **Gateway del DHCP = FW01 (`172.16.0.1`):** la guía original usa un gateway (`.2`) que no coincide con el equipo que hace NAT.
 - **Agentes Zabbix en modo activo:** las VMs están detrás del NAT de FW01; si los agentes inician la conexión, no hace falta abrir puertos entrantes.
 - **Red ATTACK aislada:** permite practicar ataques contra CORP sin exponer la red doméstica.
