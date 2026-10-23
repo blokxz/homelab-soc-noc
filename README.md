@@ -160,8 +160,8 @@ La separación la hace **FW01 (OPNsense)**, una VM con tres placas de red, cada 
 - [x] **DC01 – Parte 2**: DHCP, usuario de prueba
 - [x] **WS01**: Windows 11 unido al dominio
 - [x] **NOC – Zabbix 7.0 LTS** en la netbook (Docker) con agentes en DC01, WS01 y FW01
-- [ ] **NOC – Simulación de incidentes y tráfico** entre equipos
-- [ ] **NOC – Dashboard unificado** (*single pane of glass*): FW01, DC01, WS01 y router en una sola vista
+- [x] **NOC – Simulación de incidentes y tráfico** entre equipos
+- [x] **NOC – Dashboard unificado** (*single pane of glass*): FW01, DC01, WS01 y router en una sola vista
 - [ ] **DC01 – Parte 3**: OUs y alta masiva de usuarios con PowerShell
 - [ ] GPOs y políticas de seguridad
 - [ ] **SOC**: Wazuh + Sysmon
