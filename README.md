@@ -6,30 +6,6 @@ Laboratorio propio que simula la red de una empresa chica para practicar tareas 
 
 ---
 
-## Índice por capítulos
-
-- [Contenido del repositorio](#contenido-del-repositorio)
-- [Objetivos](#objetivos)
-- [Hardware](#hardware)
-- [Arquitectura](#arquitectura)
-  - [Vista isométrica](#vista-isomtrica)
-  - [Máquinas virtuales](#maquinas-virtuales)
-  - [Plan de direcciones](#plan-de-direcciones)
-  - [Segmentación: cómo se separa el lab de la red de casa](#segmentacion-como-se-separa-el-lab-de-la-red-de-casa)
-  - [Política de firewall (FW01)](#politica-de-firewall-fw01)
-  - [Flujos de monitoreo](#flujos-de-monitoreo)
-- [Estado del proyecto](#estado-del-proyecto)
-- [Fase 1 – FW01 (OPNsense)](#fase-1--fw01-opnsense)
-- [Fase 2 – DC01 (Windows Server 2022)](#fase-2--dc01-windows-server-2022)
-- [Fase 3 – WS01 (Windows 11 Enterprise)](#fase-3--ws01-windows-11-enterprise)
-- [Fase 4 – NOC con Zabbix 7.0 LTS](#fase-4--noc-con-zabbix-70-lts)
-- [Operación diaria: apagar y encender el lab](#operacion-diaria-apagar-y-encender-el-lab)
-- [Problemas encontrados y soluciones](#problemas-encontrados-y-soluciones)
-- [Decisiones de diseño](#decisiones-de-diseno)
-- [Próximos pasos](#proximos-pasos)
-
----
-
 ## Contenido del repositorio
 
 ```
@@ -38,6 +14,8 @@ Laboratorio propio que simula la red de una empresa chica para practicar tareas 
 ├── docs/
 │   ├── arquitectura_svg.py   # Código que genera el diagrama de arquitectura
 │   └── homelab-fossflow.json # Diagrama isométrico para FossFLOW
+├── mcp/
+│   └── claude_desktop_config.example.json  # Conexión de Claude Desktop a Zabbix (sin token)
 ├── zabbix/
 │   ├── docker-compose.yml    # Zabbix 7.0 LTS: PostgreSQL + server + web + agente
 │   └── .env.example          # Plantilla de variables (copiar a .env)
@@ -117,14 +95,14 @@ La separación la hace **FW01 (OPNsense)**, una VM con tres placas de red, cada 
 - **Entrada (casa → lab):** **bloqueada por defecto**. Solo hay dos excepciones, puntuales y documentadas:
   - HTTPS a la GUI de FW01 desde la red de casa (administración).
   - TCP 10050 hacia FW01 **solo desde la IP de Zabbix** (`192.168.1.39`), para el agente pasivo.
-- **Bloqueo de redes privadas en la WAN:** OPNsense lo trae activado porque asume que la WAN da directo a internet. Acá la WAN está dentro de una red privada, así que se desactivó para poder administrarlo.
+- **Bloqueo de redes privadas en la WAN:** OPNsense lo trae activado porque asume que la WAN da directo a internet. Acá la WAN está dentro de una red privada, así que se desactivó para poder administrarlo (ver problema 5).
 - **El controlador de dominio no rutea.** La guía original hacía NAT en el DC con RRAS; acá las funciones están separadas: FW01 maneja el tráfico y DC01 maneja identidades, DNS y DHCP.
 
 **Cómo se verifica el aislamiento:**
 - Si FW01 se apaga, DC01 y WS01 pierden la salida a internet: no hay otro camino.
 - Desde la red de casa, `172.16.0.0/24` no es alcanzable. Por eso Zabbix no puede consultar a DC01 y WS01 directamente y se usan **agentes activos**, que inician la conexión desde adentro.
 
-**¿Por qué una placa por red y no VLANs?** En VMware es más simple, y equivale a un firewall con un puerto físico por red. En producción lo habitual es una sola interfaz con VLANs etiquetadas hacia un switch.
+**¿Por qué una placa por red y no VLANs?** En VMware es más simple, y equivale a un firewall con un puerto físico por red. En producción lo habitual es una sola interfaz con VLANs etiquetadas hacia un switch (*router-on-a-stick*). El concepto es el mismo: redes aisladas que solo se comunican a través de las reglas del firewall.
 
 ### Política de firewall (FW01)
 
@@ -160,8 +138,10 @@ La separación la hace **FW01 (OPNsense)**, una VM con tres placas de red, cada 
 - [x] **DC01 – Parte 2**: DHCP, usuario de prueba
 - [x] **WS01**: Windows 11 unido al dominio
 - [x] **NOC – Zabbix 7.0 LTS** en la netbook (Docker) con agentes en DC01, WS01 y FW01
-- [x] **NOC – Simulación de incidentes y tráfico** entre equipos
+- [ ] **NOC – Simulación de incidentes y tráfico** entre equipos
 - [x] **NOC – Dashboard unificado** (*single pane of glass*): FW01, DC01, WS01 y router en una sola vista
+- [x] **IA aplicada al NOC**: Claude + MCP de Zabbix, en modo solo lectura
+- [ ] **NOC – Dependencias de triggers y notificaciones**
 - [ ] **DC01 – Parte 3**: OUs y alta masiva de usuarios con PowerShell
 - [ ] GPOs y políticas de seguridad
 - [ ] **SOC**: Wazuh + Sysmon
@@ -310,8 +290,26 @@ Para borrar todo: `docker compose down -v && sudo rm -rf ~/homelab/zabbix`.
 **Item calculado en FW01:** el template de FreeBSD no trae un "CPU utilization" total, así que se creó uno para compararlo con los Windows:
 - Type: *Calculated* · Key: `cpu.util.total` · Formula: `100-last(//system.cpu.util[,idle])` · Units: `%`
 
-### Dashboard "NOC – Homelab"
-Problems by severity · Host availability · Problems (recientes) · CPU de DC01/WS01/FW01 · tráfico de FW01 en WAN (`em0`) y CORP (`em1`) · latencia del router.
+### Dashboard "NOC – Homelab" (*single pane of glass*)
+
+![Dashboard NOC en Zabbix](img/zabbix-dashboard-noc.png)
+
+Una sola pantalla con el estado, los problemas y el rendimiento de todo el lab:
+
+| Widget | Qué muestra |
+|---|---|
+| **Honeycomb** | Un hexágono por equipo (DC01, WS01, FW01, router, Zabbix server) que cambia de color según su estado |
+| **Problems by severity** | Cantidad de problemas activos por severidad |
+| **Host availability** | Equipos disponibles / no disponibles, separados por agente activo y pasivo |
+| **Problems** | Lista de problemas con línea de tiempo; desde acá se hace el *acknowledge* |
+| **Graph – CPU** | CPU de DC01, WS01 y FW01 en la misma escala (FW01 vía item calculado) |
+| **Graph – Tráfico FW01 WAN** | Tráfico de entrada y salida de `em0` (salida a internet) |
+| **Item value – Tráfico CORP** | Tráfico actual de `em1` (red corporativa), entrada y salida |
+| **Gauge** | CPU de DC01, con umbrales de color |
+
+Se usa en modo **Kiosk** (pantalla completa sin menús), como en una pared de NOC.
+
+**Validación:** se generaron incidentes reales (reinicio de DC01 y WS01, servicio detenido) y se siguió el ciclo completo: detección → *acknowledge* con comentario → resolución automática al volver el servicio.
 
 ---
 
@@ -344,6 +342,66 @@ Se usa apagado del sistema operativo, no "Power Off" de VMware, para no corrompe
 
 ---
 
+## Fase 5 – IA aplicada al NOC (Claude + MCP de Zabbix)
+
+Claude Desktop se conecta a la API de Zabbix mediante el protocolo **MCP** (*Model Context Protocol*), usando el servidor comunitario [zabbix-mcp-server](https://github.com/mpeirone/zabbix-mcp-server). Permite operar el monitoreo en lenguaje natural: consultar problemas, analizar incidentes, armar el resumen del turno y generar dashboards con datos reales.
+
+```
+PC Windows                                   Netbook (Mint)
+┌────────────────────────────────┐          ┌───────────────────┐
+│ Claude Desktop                 │          │ Zabbix (Docker)   │
+│   └─ servidor MCP (uv) ────────┼── red ──▶│   API :8080       │
+└────────────────────────────────┘          └───────────────────┘
+```
+
+![Dashboard de problemas generado por Claude con datos de Zabbix](img/ia-dashboard.png)
+
+*Dashboard que armó Claude consultando Zabbix por MCP (reconstruido en SVG con los datos reales del lab, [`img/ia-dashboard.svg`](img/ia-dashboard.svg)). Lo armó solo a partir del pedido "¿qué problemas activos hay en Zabbix?": resumen ejecutivo, KPIs, línea de tiempo de incidentes, tiempo sin reportar por host, diagnóstico y un runbook con los pasos a seguir.*
+
+**Qué muestra:**
+- **Conclusión arriba de todo:** los 3 hosts del lab dejaron de reportar a las 12:35; los 6 problemas abiertos son consecuencia de un único corte.
+- **KPIs:** 6 problemas abiertos (ninguno con *acknowledge*), 2 de severidad alta, 3 hosts sin reportar, 342 ítems sin datos y 119 minutos de silencio.
+- **Línea de tiempo:** el patrón se repite. El lab se apaga, Zabbix alerta y todo se resuelve al reencenderlo (11:28 del 23/10).
+- **Tiempo sin reportar:** el router y el Zabbix server siguen en línea → la red de casa funciona y el problema está en la PC de las VMs.
+- **Diagnóstico y runbook:** causa común (hipervisor apagado), FW01 inalcanzable (no es el agente), la alerta del server es ruido derivado; pasos ordenados de lo más probable a lo menos, con los comandos, y la recomendación de usar ventanas de mantenimiento y dependencias de triggers.
+
+### Seguridad: defensa en profundidad (solo lectura)
+
+| Capa | Configuración | Qué evita |
+|---|---|---|
+| 1. Usuario dedicado | `mcp-claude`, rol *User*, grupo con permiso **Read** sobre los hosts del lab | Que la IA tenga permisos de administrador |
+| 2. Token propio | API token solo para este usuario, revocable | Compartir credenciales; si se expone, se rota sin afectar a nadie |
+| 3. Modo del conector | `READ_ONLY=true` | Operaciones de escritura desde el MCP |
+| 4. Lista blanca de métodos | `ZABBIX_API_WHITELIST=.*\.get` | Cualquier método que no sea de consulta |
+
+**Prueba de la protección:** un intento de `host.create` desde Claude fue rechazado por el conector: *"Method 'host.create' is not in whitelist"*.
+
+La configuración de ejemplo (sin token) está en [`mcp/claude_desktop_config.example.json`](mcp/claude_desktop_config.example.json).
+
+### Caso real: correlación de eventos con IA
+
+Con las VMs apagadas, Zabbix tenía **6 problemas activos**. Consultado por MCP, Claude los ordenó cronológicamente e identificó **una sola causa raíz**:
+
+| Hora | Host | Problema |
+|---|---|---|
+| 12:39 | **FW01** | Zabbix agent is not available |
+| 12:41 | WS01 / DC01 | Active checks are not available |
+| 12:55 | Zabbix server | More than 100 items missing data |
+| 13:04–13:05 | DC01 / WS01 | Agent not available (nodata 30m) |
+
+> FW01 cayó primero; DC01 y WS01 dejaron de reportar porque sus datos pasan por el firewall, no porque estuvieran caídos. El resto de las alertas son consecuencias.
+
+Es el caso que resuelven las **dependencias de triggers** (próximo paso): una falla debería producir una sola alerta.
+
+### Ejemplos de uso
+
+- *"¿Qué problemas activos hay? Ordenalos por severidad."*
+- *"¿Cómo estuvo la CPU de DC01 en las últimas 24 horas?"*
+- *"Hacé el resumen del turno: qué pasó, cuánto duró y qué sigue abierto."*
+- *"Analizá este problema y proponé los pasos de un runbook."*
+
+---
+
 ## Problemas encontrados y soluciones
 
 ### 1. VMware sin redes virtuales
@@ -363,7 +421,7 @@ Se usa apagado del sistema operativo, no "Power Off" de VMware, para no corrompe
 - **Aprendizaje:** nunca conectar un firewall recién instalado a una red productiva antes de asignar sus interfaces.
 
 ### 4. Falta de memoria en OPNsense
-- **Síntoma:** `pid … (python3.13) … was killed: failed to reclaim memory` y caída a `Enter full pathname of shell or RETURN for /bin/sh` (modo de usuario único), con errores de `config.inc` en el arranque.
+- **Síntoma:** `pid … (python3.13) … was killed: failed to reclaim memory` y caída a `Enter full pathname of shell or RETURN for /bin/sh` (modo de usuario único), con errores de `config.inc` en el menú.
 - **Causa:** RAM insuficiente asignada a la VM.
 - **Solución:** subir a 2 GB y reinstalar.
 
@@ -384,7 +442,7 @@ Se usa apagado del sistema operativo, no "Power Off" de VMware, para no corrompe
 - **Síntoma:** después de promover DC01, `nslookup dc01.corp.home.arpa` devolvía *Non-existent domain*, aunque `google.com` resolvía bien. La consola DNS no mostraba zonas.
 - **Diagnóstico:** `Get-ADDomain` confirmaba que el dominio existía → el problema era el DNS, no el AD.
 - **Causa:** el servicio DNS arrancó antes de que Active Directory estuviera listo y no cargó las zonas integradas en AD.
-- **Solución:** `Restart-Service DNS` → `Get-DnsServerZone` mostró `corp.home.arpa` y `_msdcs.corp.home.arpa` → `ipconfig /registerdns` y `Restart-Service netlogon` para registrar los registros del DC. La consola DNS requirió cerrar y abrir para mostrar los cambios.
+- **Solución:** `Restart-Service DNS` → `Get-DnsServerZone` mostró `corp.home.arpa` y `_msdcs.corp.home.arpa` → `ipconfig /registerdns` y `Restart-Service netlogon` para registrar los registros del DC. La consola gráfica requería cerrarse y abrirse de nuevo para mostrar los cambios.
 
 ### 8. Usuario de dominio sin poder iniciar sesión en WS01
 - **Síntoma:** *"The user name or password is incorrect"* con `CORP\uprueba`.
@@ -397,15 +455,28 @@ Se usa apagado del sistema operativo, no "Power Off" de VMware, para no corrompe
   - `nc -zv 192.168.1.59 10050` desde la netbook → timeout. `curl -k https://192.168.1.59` → OK, así que la red estaba bien y el problema era puntual del puerto 10050.
   - La regla WAN tenía primero la IP de origen equivocada (`.59` en lugar de `.39`). Corregida, seguía fallando.
   - Como OPNsense descarta en silencio los paquetes a puertos cerrados, un agente que no escucha se ve desde afuera igual que un bloqueo del firewall.
-- **Causa:** en el plugin del agente, **Listen IPs** tenía `192.168.1.39` (la IP de la netbook). Ese campo es la IP **propia de FW01** donde el agente escucha; el agente no podía escuchar en una dirección que no le pertenecía.
+- **Causa:** en el plugin del agente, **Listen IPs** tenía `192.168.1.39` (la IP de la netbook). Ese campo es la IP **propia de FW01** donde el agente escucha; el agente no podía escuchar en una dirección que no le pertenece.
 - **Solución:** *Listen IPs* = `0.0.0.0` y *Zabbix Servers* = `192.168.1.39` (quién tiene permiso para consultar).
 - **Aprendizaje:** distinguir "dónde escucha el servicio" de "quién puede conectarse", y verificar del lado del servidor (servicio y puerto en escucha) antes de culpar al firewall.
+
+### 10. Alerta de swap en la netbook (primer incidente real detectado por Zabbix)
+- **Síntoma:** en el dashboard, *"Linux: High swap space usage (less than 50% free)"* en el host *Zabbix server*, abierto durante más de 16 horas.
+- **Hallazgo extra:** el widget *Problems by severity* mostraba 0 problemas porque filtraba solo los grupos `Lab/*`, y el host estaba en `Zabbix servers`. Se agregó el grupo al widget.
+- **Diagnóstico:** `free -h`, `ps aux --sort=-%mem` → la memoria la consumían los navegadores (Brave y Google Chrome) abiertos en la netbook, no los contenedores de Zabbix.
+- **Solución:** se cerraron los navegadores; el uso de swap bajó y el problema se resolvió solo. Se documentó con *acknowledge* en Zabbix.
+- **Aprendizaje:** el equipo que monitorea no debería usarse como estación de trabajo; compartir sus recursos afecta al servicio. Es un antecedente a tener en cuenta antes de sumar Wazuh, que pide más RAM.
+
+### 11. El MCP de Zabbix no arrancaba en Claude Desktop
+- **Síntoma:** en el log de Claude Desktop, `error: El sistema no puede encontrar la ruta especificada. (os error 3)` y *"Server transport closed unexpectedly"*.
+- **Diagnóstico:** el mismo comando ejecutado a mano en PowerShell (`uv run --directory ... zabbix-mcp`) arrancaba bien → el problema estaba en la configuración, no en el servidor.
+- **Causa:** la configuración seguía con una ruta vieja y con el punto de entrada de una versión anterior del proyecto (`python src/zabbix_mcp_server.py`); la versión actual se ejecuta como `zabbix-mcp`.
+- **Segundo problema:** después de rotar el token, una de las instancias del MCP seguía usando el anterior (*"Session terminated, re-login"*). Se resolvió cerrando Claude Desktop por completo (incluidos los procesos en segundo plano).
 
 ---
 
 ## Decisiones de diseño
 
-- **OPNsense en lugar de RRAS en el DC:** el controlador de dominio no debería rutear tráfico. Es el equipo más crítico (si cae, cae el dominio) y meterlo en el camino de todo el tráfico suma un punto de fallo. Cada equipo cumple una función: FW01 maneja el tráfico, DC01 las identidades.
+- **OPNsense en lugar de RRAS en el DC:** el controlador de dominio no debería rutear tráfico. Es el equipo más crítico (si cae, cae el dominio) y meterlo en el camino de todo el tráfico suma superficie de ataque. Cada equipo cumple una función: FW01 maneja el tráfico, DC01 las identidades.
 - **Gateway del DHCP = FW01 (`172.16.0.1`):** la guía original usa un gateway (`.2`) que no coincide con el equipo que hace NAT.
 - **Agentes Zabbix en modo activo:** las VMs están detrás del NAT de FW01; si los agentes inician la conexión, no hace falta abrir puertos entrantes.
 - **Red ATTACK aislada:** permite practicar ataques contra CORP sin exponer la red doméstica.

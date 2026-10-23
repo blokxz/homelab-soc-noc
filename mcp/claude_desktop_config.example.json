@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "zabbix": {
+      "command": "uv",
+      "args": ["run", "--directory", "E:\\AD-Project\\mcp\\zabbix-mcp-server", "zabbix-mcp"],
+      "env": {
+        "ZABBIX_URL": "http://192.168.1.39:8080",
+        "ZABBIX_TOKEN": "<token del usuario mcp-claude>",
+        "READ_ONLY": "true",
+        "ZABBIX_API_WHITELIST": ".*\\.get"
+      }
+    }
+  }
+}
