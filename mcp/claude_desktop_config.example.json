@@ -2,7 +2,7 @@
   "mcpServers": {
     "zabbix": {
       "command": "uv",
-      "args": ["run", "--directory", "E:\\AD-Project\\mcp\\zabbix-mcp-server", "zabbix-mcp"],
+      "args": ["run", "--directory", "C:\\HOMELAB\\mcp\\zabbix-mcp-server", "zabbix-mcp"],
       "env": {
         "ZABBIX_URL": "http://192.168.1.39:8080",
         "ZABBIX_TOKEN": "<token del usuario mcp-claude>",

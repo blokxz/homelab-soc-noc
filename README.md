@@ -20,6 +20,8 @@ Laboratorio propio que simula la red de una empresa chica para practicar tareas 
 │   ├── docker-compose.yml    # Zabbix 7.0 LTS: PostgreSQL + server + web + agente
 │   └── .env.example          # Plantilla de variables (copiar a .env)
 └── img/                      # Diagramas (2D e isométrico) y capturas del lab
+    ├── README.md             # Lista de imágenes y capturas pendientes
+    └── ia-dashboard.svg      # Fuente del dashboard generado por Claude (Fase 5)
 ```
 
 ---
@@ -52,6 +54,7 @@ Todo el proyecto vive en `C:\HOMELAB` (ISOs, VMs y repo), separado del resto del
 
 - **Líneas continuas:** conexiones de red. **Líneas verdes punteadas:** flujos de monitoreo de Zabbix (agentes activos de DC01 y WS01 por TCP 10051, que salen por el NAT de FW01; agente pasivo de FW01 por TCP 10050).
 - **Wazuh y la red ATTACK** están diseñados pero todavía no implementados.
+- Las redes CORP y ATTACK solo se comunican con el exterior a través de FW01 (ver *Segmentación*, más abajo).
 - El diagrama se genera con código desde [`docs/arquitectura_svg.py`](docs/arquitectura_svg.py), usando los íconos de la librería [`diagrams`](https://diagrams.mingrammer.com/).
 
 ### Vista isométrica
@@ -59,7 +62,6 @@ Todo el proyecto vive en `C:\HOMELAB` (ISOs, VMs y repo), separado del resto del
 ![Arquitectura isométrica del homelab](img/arquitectura-3d.png)
 
 Hecha con [FossFLOW](https://www.icewolfsoft.com/fossflow/). El archivo editable es [`docs/homelab-fossflow.json`](docs/homelab-fossflow.json) (en FossFLOW: menú → *Open*).
-- Las redes CORP y ATTACK solo se comunican con el exterior a través de FW01 (ver *Segmentación*, más abajo).
 
 ### Máquinas virtuales
 
@@ -117,6 +119,8 @@ La separación la hace **FW01 (OPNsense)**, una VM con tres placas de red, cada 
 | ATTACK → internet | Bloquear (regla deshabilitada por defecto) | Se habilita solo para actualizar Kali | ⏳ Diseñada |
 | CORP → ATTACK | Bloquear | La red corporativa no inicia conexiones hacia la de ataque | ⏳ Diseñada |
 
+> **Orden de las reglas:** OPNsense evalúa las reglas de cada interfaz de arriba hacia abajo y aplica la primera que coincide. Al implementar *CORP → ATTACK: Bloquear*, tiene que quedar **arriba** de *CORP → cualquiera: Permitir*; si no, nunca se aplica. Lo mismo en OPT1: los bloqueos hacia `192.168.0.0/16` e internet van antes de cualquier regla de permitir.
+
 ### Flujos de monitoreo
 
 | Flujo | Protocolo / puerto | Dirección | Estado |
@@ -138,7 +142,7 @@ La separación la hace **FW01 (OPNsense)**, una VM con tres placas de red, cada 
 - [x] **DC01 – Parte 2**: DHCP, usuario de prueba
 - [x] **WS01**: Windows 11 unido al dominio
 - [x] **NOC – Zabbix 7.0 LTS** en la netbook (Docker) con agentes en DC01, WS01 y FW01
-- [ ] **NOC – Simulación de incidentes y tráfico** entre equipos
+- [ ] **NOC – Simulación de incidentes y tráfico** entre equipos (ya validado: host reiniciado y servicio detenido; faltan CPU, disco, mantenimiento y generación de tráfico)
 - [x] **NOC – Dashboard unificado** (*single pane of glass*): FW01, DC01, WS01 y router en una sola vista
 - [x] **IA aplicada al NOC**: Claude + MCP de Zabbix, en modo solo lectura
 - [ ] **NOC – Dependencias de triggers y notificaciones**
@@ -376,7 +380,7 @@ PC Windows                                   Netbook (Mint)
 
 **Prueba de la protección:** un intento de `host.create` desde Claude fue rechazado por el conector: *"Method 'host.create' is not in whitelist"*.
 
-La configuración de ejemplo (sin token) está en [`mcp/claude_desktop_config.example.json`](mcp/claude_desktop_config.example.json).
+La configuración de ejemplo (sin token) está en [`mcp/claude_desktop_config.example.json`](mcp/claude_desktop_config.example.json). La ruta de `--directory` es la carpeta donde se clonó `zabbix-mcp-server` (en el ejemplo, `C:\HOMELAB\mcp\zabbix-mcp-server`, siguiendo la estructura del proyecto); hay que ajustarla si se clonó en otro lado.
 
 ### Caso real: correlación de eventos con IA
 
