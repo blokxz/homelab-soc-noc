@@ -4,6 +4,8 @@ Laboratorio propio que simula la red de una empresa chica para practicar tareas 
 
 > Punto de partida: el proyecto [Active Directory and PowerShell Automation](https://github.com/techgneek/Active-Directory-and-Powershell-Automation) de techgneek. Lo extendí con un firewall dedicado, una red de ataque aislada, un SIEM (Wazuh) y monitoreo NOC (Zabbix).
 
+> Proyecto vinculado: [viewDI](https://github.com/blokxz/viewDI), una interfaz de terminal propia para administrar y monitorear contenedores **Docker** e **Incus**. En este lab sirve para manejar desde la netbook los contenedores del NOC (Zabbix y, más adelante, Wazuh): estado, logs, recursos y reinicios. Para un uso solo de monitoreo: `viewdi --read-only`.
+
 ---
 
 ## Contenido del repositorio
