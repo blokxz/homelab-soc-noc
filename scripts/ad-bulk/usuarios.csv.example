@@ -1,0 +1,5 @@
+Nombre,Apellido,SamAccountName,OU,Titulo,Departamento
+Ana,Gomez,agomez,Soporte,Analista N1,IT
+Bruno,Diaz,bdiaz,Soporte,Analista N2,IT
+Carla,Fernandez,cfernandez,Redes,Administradora de Red,Infraestructura
+Diego,Lopez,dlopez,Seguridad,Analista SOC,Seguridad
