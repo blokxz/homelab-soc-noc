@@ -5,7 +5,7 @@ auto-remediación y apertura de tickets en Zabbix para el NOC del homelab
 
 No usa el token de solo lectura `mcp-claude` de la Fase 5: hace falta un
 usuario con rol Admin (o un token de ese usuario), porque crea objetos
-(trigger.adddependencies, maintenance.create, mediatype.create, action.create).
+(trigger.update, maintenance.create, mediatype.create, action.create).
 Mantiene así la separación de la Fase 5: la IA sigue sin poder escribir en
 Zabbix, y este script es un paso manual que corre una persona.
 
@@ -133,18 +133,29 @@ def cmd_dependencies(args):
         for host_label, t in downstream:
             deps.append({"triggerid": missing_data["triggerid"], "dependsOnTriggerid": t["triggerid"]})
 
-    if args.dry_run:
-        print("\n--dry-run: no se aplicó nada. Payload de trigger.adddependencies por trigger:")
-        print(json.dumps(deps, indent=2))
-        return
-
-    # trigger.adddependencies pide un dependencyid por trigger (puede agrupar
-    # las dependencias de un mismo trigger en un solo llamado).
     by_trigger = {}
     for d in deps:
-        by_trigger.setdefault(d["triggerid"], []).append({"dependsOnTriggerid": d["dependsOnTriggerid"]})
-    for triggerid, dependencies in by_trigger.items():
-        api_call(url, token, "trigger.adddependencies", {"triggerid": triggerid, "dependsOnTriggerid": [d["dependsOnTriggerid"] for d in dependencies]})
+        by_trigger.setdefault(d["triggerid"], set()).add(d["dependsOnTriggerid"])
+
+    if args.dry_run:
+        print("\n--dry-run: no se aplicó nada. Payload de trigger.update por trigger:")
+        preview = [
+            {"triggerid": tid, "dependencies": [{"triggerid": dep} for dep in sorted(deps_on)]}
+            for tid, deps_on in by_trigger.items()
+        ]
+        print(json.dumps(preview, indent=2))
+        return
+
+    # Zabbix ya no tiene trigger.adddependencies (existía hasta la serie 4.x):
+    # en versiones recientes las dependencias se fijan con trigger.update,
+    # pasando la lista COMPLETA de dependencias que debe quedar. Por eso se
+    # trae primero lo que ya tenía el trigger (selectDependencies) y se
+    # combina con lo nuevo, para no pisar una dependencia puesta a mano.
+    for triggerid, deps_on in by_trigger.items():
+        current = api_call(url, token, "trigger.get", {"triggerids": [triggerid], "selectDependencies": ["triggerid"]})
+        existing = {d["triggerid"] for d in current[0]["dependencies"]} if current else set()
+        merged = sorted(existing | deps_on)
+        api_call(url, token, "trigger.update", {"triggerid": triggerid, "dependencies": [{"triggerid": tid} for tid in merged]})
     print(f"\nListo: {len(by_trigger)} trigger(s) actualizados con dependencias.")
 
 
