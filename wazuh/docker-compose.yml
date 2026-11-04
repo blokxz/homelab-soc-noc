@@ -1,0 +1,101 @@
+# Wazuh 4.9 single-node para el homelab SOC (Fase 9).
+#
+# A DIFERENCIA DE ZABBIX: esto NO corre en la netbook. La netbook ya tuvo un
+# incidente real de swap por RAM corta (ver README, problema #10) con solo
+# Zabbix arriba; el indexer de Wazuh (OpenSearch) pide 4 GB+ de RAM él solo.
+# Por eso Wazuh corre como VM aparte en el host de VMware (ver README,
+# Decisiones de diseño: "Zabbix para métricas, OPNsense/Wazuh para logs").
+#
+# Requisitos de la VM: Linux (Ubuntu/Debian), 4 vCPU, 8 GB RAM mínimo, 50 GB
+# disco, Docker + Docker Compose v2. Antes de levantar:
+#   sudo sysctl -w vm.max_map_count=262144   (OpenSearch lo exige; agregar a
+#   /etc/sysctl.conf para que sobreviva a un reinicio)
+#
+# Primer arranque (genera los certificados TLS entre los 3 servicios, deja
+# los archivos bajo ./config/certs/):
+#   cp .env.example .env && nano .env
+#   docker compose -f generate-certs.yml run --rm generator
+#   docker compose up -d
+#   docker compose ps                      # los 3 contenedores "running"
+#
+# Acceso: https://IP-VM:443 (usuario inicial admin, contraseña en .env).
+# Solo se usan las imágenes y la configuración por defecto del proyecto: no
+# hay opensearch.yml/ossec.conf propios todavía (ver wazuh/README.md, "Qué
+# falta validar"). Verificar la versión de imagen contra el release actual
+# antes de desplegar: https://github.com/wazuh/wazuh-docker/releases
+
+services:
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:4.9.2
+    container_name: wazuh.indexer
+    restart: unless-stopped
+    hostname: wazuh.indexer
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    environment:
+      - "OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g"   # ajustar a la RAM real de la VM
+    volumes:
+      - ./data/indexer:/var/lib/wazuh-indexer
+      - ./config/certs/root-ca.pem:/usr/share/wazuh-indexer/certs/root-ca.pem:ro
+      - ./config/certs/wazuh.indexer/wazuh.indexer.pem:/usr/share/wazuh-indexer/certs/indexer.pem:ro
+      - ./config/certs/wazuh.indexer/wazuh.indexer-key.pem:/usr/share/wazuh-indexer/certs/indexer-key.pem:ro
+
+  wazuh.manager:
+    image: wazuh/wazuh-manager:4.9.2
+    container_name: wazuh.manager
+    restart: unless-stopped
+    hostname: wazuh.manager
+    depends_on:
+      - wazuh.indexer
+    ports:
+      - "1514:1514"       # agentes (protocolo Wazuh)
+      - "1515:1515"       # registro de agentes
+      - "514:514/udp"     # syslog de FW01 (OPNsense/Suricata) -> Wazuh
+      - "55000:55000"     # API de Wazuh
+    environment:
+      - INDEXER_URL=https://wazuh.indexer:9200
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=${INDEXER_PASSWORD:?Definir INDEXER_PASSWORD en .env}
+      - FILEBEAT_SSL_VERIFICATION_MODE=full
+      - API_USERNAME=wazuh-wui
+      - API_PASSWORD=${API_PASSWORD:?Definir API_PASSWORD en .env}
+    volumes:
+      - ./data/manager-etc:/var/ossec/etc
+      - ./data/manager-logs:/var/ossec/logs
+      - ./data/manager-queue:/var/ossec/queue
+      - ./data/manager-var-multigroups:/var/ossec/var/multigroups
+      - ./data/manager-integrations:/var/ossec/integrations
+      - ./data/manager-active-response:/var/ossec/active-response/bin
+      - ./data/manager-agentless:/var/ossec/agentless
+      - ./data/manager-wodles:/var/ossec/wodles
+      - ./config/certs/root-ca.pem:/etc/ssl/root-ca.pem:ro
+      - ./config/certs/wazuh.manager/wazuh.manager.pem:/etc/ssl/filebeat.pem:ro
+      - ./config/certs/wazuh.manager/wazuh.manager-key.pem:/etc/ssl/filebeat-key.pem:ro
+
+  wazuh.dashboard:
+    image: wazuh/wazuh-dashboard:4.9.2
+    container_name: wazuh.dashboard
+    restart: unless-stopped
+    hostname: wazuh.dashboard
+    depends_on:
+      - wazuh.indexer
+      - wazuh.manager
+    ports:
+      - "443:5601"
+    environment:
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=${INDEXER_PASSWORD:?Definir INDEXER_PASSWORD en .env}
+      - WAZUH_API_URL=https://wazuh.manager
+      - API_USERNAME=wazuh-wui
+      - API_PASSWORD=${API_PASSWORD:?Definir API_PASSWORD en .env}
+      - DASHBOARD_USERNAME=admin
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:?Definir DASHBOARD_PASSWORD en .env}
+    volumes:
+      - ./config/certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem:ro
+      - ./config/certs/wazuh.dashboard/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/dashboard.pem:ro
+      - ./config/certs/wazuh.dashboard/wazuh.dashboard-key.pem:/usr/share/wazuh-dashboard/certs/dashboard-key.pem:ro

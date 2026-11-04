@@ -1,0 +1,14 @@
+# Genera los certificados TLS que usan indexer/manager/dashboard entre sí.
+# Correr UNA VEZ antes del primer `docker compose up -d`:
+#   docker compose -f generate-certs.yml run --rm generator
+#
+# config/certs.yml describe los nodos (ver archivo al lado). El generador es
+# la imagen oficial del proyecto wazuh-docker; verificar la versión vigente
+# en https://github.com/wazuh/wazuh-docker/releases antes de usarla.
+services:
+  generator:
+    image: wazuh/wazuh-certs-generator:0.0.2
+    container_name: wazuh-certs-generator
+    volumes:
+      - ./config/certs.yml:/config/certs.yml:ro
+      - ./config/certs:/certificates
