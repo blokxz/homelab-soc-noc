@@ -1,0 +1,52 @@
+---
+# Ejemplo de IaC puntual para FW01 con la colección ansibleguy.opnsense.
+#
+# NO PROBADO: no hay forma de instalar esta colección ni correr Ansible
+# contra un FW01 real desde esta sesión. Antes de usarlo en el lab:
+#   - ansible-galaxy collection install -r requirements.yml
+#   - Confirmar los nombres de módulo/parámetros contra la documentación
+#     actual de la colección (ver ../README.md).
+#   - Correr primero con --check.
+#
+# Uso:
+#   export OPNSENSE_API_KEY=...
+#   export OPNSENSE_API_SECRET=...
+#   ansible-playbook -i inventory.yml aliases.yml --check
+#   ansible-playbook -i inventory.yml aliases.yml
+
+- name: Alias de firewall para FW01 (declarativo)
+  hosts: fw01
+  gather_facts: false
+  vars:
+    ansible_connection: local  # el módulo habla con la API REST, no por SSH
+
+  tasks:
+    - name: Alias "ATTACK_NET" (red de pruebas de ataque)
+      ansibleguy.opnsense.alias:
+        firewall: "{{ ansible_host }}"
+        api_key: "{{ lookup('env', 'OPNSENSE_API_KEY') }}"
+        api_secret: "{{ lookup('env', 'OPNSENSE_API_SECRET') }}"
+        ssl_verify: false
+        name: ATTACK_NET
+        content: ['172.16.66.0/24']
+        description: "Red de pruebas de ataque (ver README principal, Fase 1)"
+
+    - name: Alias "CORP_NET" (red corporativa)
+      ansibleguy.opnsense.alias:
+        firewall: "{{ ansible_host }}"
+        api_key: "{{ lookup('env', 'OPNSENSE_API_KEY') }}"
+        api_secret: "{{ lookup('env', 'OPNSENSE_API_SECRET') }}"
+        ssl_verify: false
+        name: CORP_NET
+        content: ['172.16.0.0/24']
+        description: "Red corporativa (DC01, WS01)"
+
+    - name: Alias "CASA_NET" (red de casa, nunca alcanzable desde ATTACK)
+      ansibleguy.opnsense.alias:
+        firewall: "{{ ansible_host }}"
+        api_key: "{{ lookup('env', 'OPNSENSE_API_KEY') }}"
+        api_secret: "{{ lookup('env', 'OPNSENSE_API_SECRET') }}"
+        ssl_verify: false
+        name: CASA_NET
+        content: ['192.168.0.0/16']
+        description: "Red doméstica, ver política ATTACK -> 192.168.0.0/16: Bloquear"

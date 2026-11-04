@@ -10,6 +10,13 @@ zabbix/data/
 wazuh/data/
 wazuh/config/certs/
 
+# GLPI: datos de los contenedores (Fase 11)
+tickets/data/
+
+# OPNsense: snapshots sin sanitizar (si backup-config.sh falla a mitad de
+# camino); los *.xml sanitizados sí se comitean (Fase 11)
+iac/opnsense/config-snapshots/*.raw.xml
+
 # Python
 __pycache__/
 *.pyc

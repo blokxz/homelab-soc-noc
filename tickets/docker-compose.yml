@@ -1,0 +1,47 @@
+# GLPI (gestión de tickets) para el NOC del homelab (Fase 11).
+#
+# Corre en la misma VM Linux que Wazuh (ver wazuh/docker-compose.yml), no en
+# la netbook: mismo motivo que Wazuh (RAM corta, ver problema 10 del README
+# principal) y mismo criterio de diseño (separar lo que monitorea de lo que
+# es monitoreado).
+#
+# Primer arranque:
+#   cp .env.example .env && nano .env
+#   docker compose up -d
+#   docker compose ps                 # mariadb y glpi "running" (glpi tarda
+#                                      # un par de minutos en el primer boot:
+#                                      # corre su instalador solo)
+#
+# Acceso: http://IP-VM:8090 (usuario/clave inicial glpi/glpi — cambiarla en
+# el primer login, igual que con Zabbix en la Fase 4).
+#
+# La imagen no es oficial de GLPI (el proyecto no publica una propia en
+# Docker Hub): es la imagen comunitaria `diouxx/glpi`, bastante usada en
+# guías de self-hosting. Verificar que sigue mantenida y qué versión de
+# GLPI trae antes de desplegar: https://hub.docker.com/r/diouxx/glpi
+
+services:
+  mariadb:
+    image: mariadb:11
+    container_name: glpi-mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?Definir MARIADB_ROOT_PASSWORD en .env}
+      MARIADB_DATABASE: glpi
+      MARIADB_USER: glpi
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:?Definir MARIADB_PASSWORD en .env}
+    volumes:
+      - ./data/mariadb:/var/lib/mysql
+
+  glpi:
+    image: diouxx/glpi:latest
+    container_name: glpi
+    restart: unless-stopped
+    depends_on:
+      - mariadb
+    ports:
+      - "8090:80"
+    environment:
+      TIMEZONE: America/Argentina/Buenos_Aires
+    volumes:
+      - ./data/glpi:/var/www/html/glpi

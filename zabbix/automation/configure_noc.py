@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Configura dependencias de triggers, ventana de mantenimiento y notificación
-en Zabbix para el NOC del homelab (Fase 6).
+"""Configura dependencias de triggers, ventana de mantenimiento, notificación,
+auto-remediación y apertura de tickets en Zabbix para el NOC del homelab
+(Fase 6 y Fase 11).
 
 No usa el token de solo lectura `mcp-claude` de la Fase 5: hace falta un
 usuario con rol Admin (o un token de ese usuario), porque crea objetos
@@ -15,7 +16,10 @@ Uso:
     python3 configure_noc.py dependencies                # aplicar
     python3 configure_noc.py maintenance --minutes 180   # abrir ventana antes de apagar el lab
     python3 configure_noc.py notify --telegram-token ... --telegram-chat-id ... --user Admin
-    python3 configure_noc.py all --dry-run
+    python3 configure_noc.py remediate --host WS01 --trigger-substr "Spooler" \\
+        --command 'powershell -Command "Start-Service Spooler"' --dry-run   # Fase 11
+    python3 configure_noc.py tickets --glpi-url http://IP-VM/apirest.php \\
+        --glpi-app-token ... --dry-run                                      # Fase 11
 
 Requisitos: Python 3.9+, `pip install requests`.
 """
@@ -268,6 +272,161 @@ return 'ver Alerts -> Media types -> Telegram en la GUI de Zabbix';
 """.strip()
 
 
+def cmd_remediate(args):
+    """Fase 11: auto-remediación. Crea una action que, cuando dispara un
+    trigger puntual en un host puntual, corre un comando remoto en ese mismo
+    host en vez de (o antes de) avisar a una persona.
+
+    OJO — esto es código ejecutándose solo, sin que nadie lo apruebe en el
+    momento. Antes de usarlo:
+      1. El agente del host de destino necesita `EnableRemoteCommands=1` en
+         su configuración (zabbix_agent2.conf / zabbix_agentd.conf). Viene
+         en 0 por defecto a propósito: habilitarlo le da a quien controle el
+         servidor Zabbix ejecución de comandos en ese host. Es la misma
+         lógica de defensa en profundidad de la Fase 5, pero al revés: ahí
+         se restringía qué puede hacer la IA; acá hay que restringir qué
+         puede hacer Zabbix.
+      2. Usar esto solo para fallas idempotentes y de bajo riesgo (reiniciar
+         un servicio que ya sabés que es seguro reiniciar), nunca para
+         apagar/reiniciar un host entero ni para producción fuera del lab.
+      3. `esc_period`/`esc_step_to` dejan el remote command en el paso 1
+         nada más: si el servicio vuelve a estar caído después de
+         intentarlo una vez, pasa al paso 2 (notificar a una persona) en vez
+         de reintentar en bucle.
+    """
+    url, token = args.url, args.token
+    hostid = get_host_id(url, token, args.host)
+    triggers = get_triggers(url, token, hostid)
+    trigger = find_trigger(triggers, args.trigger_substr)
+    if not trigger:
+        print(f"No se encontró un trigger en {args.host} que contenga '{args.trigger_substr}'.", file=sys.stderr)
+        print("Triggers disponibles:", [t["description"] for t in triggers], file=sys.stderr)
+        sys.exit(1)
+
+    action_params = {
+        "name": f"Auto-remediar: {args.host} - {trigger['description']}",
+        "eventsource": 0,
+        "status": 0,
+        "esc_period": "5m",
+        "pause_suppressed": 1,  # no reintentar durante una ventana de mantenimiento
+        "notify_if_canceled": 1,
+        "conditions": [
+            {"conditiontype": 16, "operator": 0, "value": hostid},  # host puntual
+        ],
+        "operations": [
+            {
+                "operationtype": 1,  # comando remoto
+                "esc_step_from": 1,
+                "esc_step_to": 1,  # un solo intento, nunca reintenta en bucle
+                "evaltype": 0,
+                "opcommand": {
+                    "type": 0,  # custom script, vía el agente del propio host
+                    "command": args.command,
+                },
+                "opcommand_hst": [{"hostid": hostid}],
+            },
+            {
+                # si sigue fallando después del paso 1, recién ahí se avisa
+                "operationtype": 0,
+                "esc_step_from": 2,
+                "esc_step_to": 2,
+                "evaltype": 0,
+                "opmessage": {"default_msg": 1, "mediatypeid": "0"},
+                "opmessage_grp": [],
+                "opmessage_usr": [{"userid": "<completar con user.get, igual que en notify>"}],
+            },
+        ],
+    }
+
+    print(f"Trigger objetivo: {trigger['description']} [{trigger['triggerid']}] en {args.host}")
+    print(f"Comando a ejecutar en el host cuando dispare: {args.command}")
+    if args.dry_run:
+        print("\n--dry-run: payload de action.create (completar userid del paso 2 antes de aplicar):")
+        print(json.dumps(action_params, indent=2))
+        return
+
+    print("\nEl paso 2 (notificación de respaldo) necesita el userid de un usuario real.")
+    print("Completarlo a mano y correr action.create, o usar notify primero para tener el media type/userid.")
+
+
+def cmd_tickets(args):
+    """Fase 11: integra Zabbix con GLPI (ver tickets/README.md) para que un
+    problema de severidad alta abra un ticket solo, en vez de depender de
+    que alguien lo cree a mano.
+
+    Necesita un API token de GLPI ya generado (Configuración -> General ->
+    API, crear un "API client" con "App token" habilitado, y un usuario con
+    un "Personal token" propio). GLPI documenta esto en su propia consola;
+    no se puede automatizar desde este script porque GLPI todavía no tiene
+    nada desplegado en el momento de correr esto.
+    """
+    url, token = args.url, args.token
+
+    mediatype_params = {
+        "name": "GLPI - Lab NOC",
+        "type": 4,  # webhook
+        "script": GLPI_WEBHOOK_SCRIPT,
+        "parameters": [
+            {"name": "glpi_url", "value": args.glpi_url},
+            {"name": "glpi_app_token", "value": args.glpi_app_token},
+            {"name": "glpi_user_token", "value": args.glpi_user_token},
+            {"name": "event_name", "value": "{EVENT.NAME}"},
+            {"name": "event_host", "value": "{HOST.NAME}"},
+            {"name": "event_severity", "value": "{EVENT.SEVERITY}"},
+        ],
+        "process_tags": 1,
+    }
+
+    if args.dry_run:
+        print("--dry-run: payload de mediatype.create:")
+        print(json.dumps(mediatype_params, indent=2))
+        print("\n--dry-run: después de crear el media type, asociarlo a un usuario (ver 'notify')")
+        print("y crear una action con condición de severidad, igual que la de Telegram.")
+        return
+
+    mediatype = api_call(url, token, "mediatype.create", mediatype_params)
+    print(f"Media type de GLPI creado: {mediatype['mediatypeids'][0]}")
+    print("Asociarlo a un usuario y crear la action de severidad alta (ver 'notify' como referencia).")
+
+
+GLPI_WEBHOOK_SCRIPT = """
+// Crea un ticket en GLPI vía su API REST cuando se dispara este media type.
+// Parámetros esperados (definidos en mediatype.create): glpi_url,
+// glpi_app_token, glpi_user_token, event_name, event_host, event_severity.
+//
+// No probado contra una instancia real de GLPI: antes de confiar en esto,
+// correrlo una vez desde Zabbix (Alerts -> Media types -> Test) y revisar
+// la respuesta. GLPI puede rechazar la sesión si el Personal Token expiró.
+try {
+    var params = JSON.parse(value),
+        initResp = JSON.parse(HttpRequest.get(
+            params.glpi_url + '/initSession',
+            'Authorization: user_token ' + params.glpi_user_token + '\\r\\nApp-Token: ' + params.glpi_app_token
+        )),
+        sessionToken = initResp.session_token,
+        req = new HttpRequest();
+
+    req.addHeader('Content-Type: application/json');
+    req.addHeader('Session-Token: ' + sessionToken);
+    req.addHeader('App-Token: ' + params.glpi_app_token);
+
+    var body = JSON.stringify({
+        input: {
+            name: '[' + params.event_severity + '] ' + params.event_name,
+            content: 'Host: ' + params.event_host + '\\nAbierto automaticamente por Zabbix.',
+            urgency: 3
+        }
+    });
+
+    var resp = req.post(params.glpi_url + '/Ticket', body);
+    return 'OK: ' + resp;
+} catch (error) {
+    Zabbix.log(4, '[GLPI webhook] ' + error);
+    throw 'GLPI webhook failed: ' + error;
+}
+""".strip()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=os.environ.get("ZABBIX_URL"), help="URL base de Zabbix (sin /api_jsonrpc.php)")
@@ -289,6 +448,20 @@ def main():
     p_notify.add_argument("--user", default="Admin", help="Usuario Zabbix que recibe la notificación")
     p_notify.add_argument("--dry-run", action="store_true")
     p_notify.set_defaults(func=cmd_notify)
+
+    p_remediate = sub.add_parser("remediate", help="Fase 11: auto-remediación (comando remoto al disparar un trigger)")
+    p_remediate.add_argument("--host", required=True, help="Host de Zabbix, ej. WS01")
+    p_remediate.add_argument("--trigger-substr", required=True, help="Substring del trigger a atender")
+    p_remediate.add_argument("--command", required=True, help='Comando a correr en el host, ej. "powershell -Command \\"Start-Service Spooler\\""')
+    p_remediate.add_argument("--dry-run", action="store_true")
+    p_remediate.set_defaults(func=cmd_remediate)
+
+    p_tickets = sub.add_parser("tickets", help="Fase 11: media type que abre un ticket en GLPI")
+    p_tickets.add_argument("--glpi-url", required=True, help="Ej. http://IP-VM/apirest.php")
+    p_tickets.add_argument("--glpi-app-token", required=True)
+    p_tickets.add_argument("--glpi-user-token", required=True)
+    p_tickets.add_argument("--dry-run", action="store_true")
+    p_tickets.set_defaults(func=cmd_tickets)
 
     args = parser.parse_args()
     if not args.url or not args.token:

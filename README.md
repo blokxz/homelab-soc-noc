@@ -22,8 +22,8 @@ Laboratorio propio que simula la red de una empresa chica para practicar tareas 
 │   ├── docker-compose.yml    # Zabbix 7.0 LTS: PostgreSQL + server + web + agente
 │   ├── .env.example          # Plantilla de variables (copiar a .env)
 │   ├── automation/
-│   │   └── configure_noc.py  # Dependencias de triggers, mantenimiento y notificación (Fase 6)
-│   └── simulate-incidents/   # Scripts para generar incidentes de prueba (Fase 6)
+│   │   └── configure_noc.py  # Triggers, mantenimiento, notificación, auto-remediación y tickets (Fases 6 y 11)
+│   └── simulate-incidents/   # Scripts para generar incidentes de prueba (Fases 6 y 11)
 ├── scripts/
 │   ├── ad-bulk/               # OUs y alta masiva de usuarios por PowerShell (Fase 7)
 │   └── gpo/                   # GPOs de contraseñas, bloqueo y auditoría (Fase 8)
@@ -32,6 +32,8 @@ Laboratorio propio que simula la red de una empresa chica para practicar tareas 
 │   ├── generate-certs.yml
 │   └── sysmon/sysmonconfig.xml
 ├── attack/                    # Simulaciones desde KALI01 y plantilla de reporte (Fase 10)
+├── tickets/                   # GLPI (gestión de tickets) integrado con Zabbix (Fase 11)
+├── iac/opnsense/               # Config versionado de FW01 + ejemplo de Ansible (Fase 11)
 └── img/                       # Diagramas (2D e isométrico) y capturas del lab
     ├── README.md             # Lista de imágenes y capturas pendientes
     └── ia-dashboard.svg      # Fuente del dashboard generado por Claude (Fase 5)
@@ -163,6 +165,9 @@ La separación la hace **FW01 (OPNsense)**, una VM con tres placas de red, cada 
 - [ ] GPOs y políticas de seguridad (Fase 8: script listo en `scripts/gpo/`, falta correrlo y validar con `Get-GPOReport`)
 - [ ] **SOC**: Wazuh + Sysmon (Fase 9: `docker-compose.yml` y config de Sysmon listos en `wazuh/`, falta desplegar la VM)
 - [ ] **Red ATTACK**: Kali, simulaciones y reportes de detección (Fase 10: scripts listos en `attack/`, falta correrlos y completar un informe real)
+- [ ] **Auto-remediación**: comando remoto ante fallas conocidas (Fase 11: subcomando `remediate` listo en `zabbix/automation/`, falta habilitar `EnableRemoteCommands` en los agentes y probarlo)
+- [ ] **Gestión de tickets**: GLPI integrado con Zabbix (Fase 11: `docker-compose.yml` listo en `tickets/`, falta desplegar la VM, generar los tokens de API y probar la apertura de tickets)
+- [ ] **IaC para FW01**: config versionado + ejemplo de Ansible (Fase 11: scripts listos en `iac/opnsense/`, falta correr el primer backup real y, si se usa, instalar y probar la colección de Ansible)
 
 ---
 
@@ -547,6 +552,48 @@ El orden sugerido y los requisitos previos (reglas de FW01, Sysmon instalado, un
 
 ---
 
+## Fase 11 – Auto-remediación, gestión de tickets e IaC
+
+> **Estado:** scripts y configuración listos en el repo; falta correrlos contra el hardware real del lab, ver el detalle de cada parte más abajo.
+
+Cierra la brecha entre "monitorear" y lo que en una NOC real se espera además: que algunas fallas se arreglen solas, que lo que no se arregla solo genere un ticket en vez de depender de que alguien mire el dashboard, y que la configuración de la red viva como código versionado y no solo en la memoria de quien hizo el último cambio por la GUI.
+
+| | NOC tradicional | Con esta fase |
+|---|---|---|
+| **Monitoreo** | El operador mira el dashboard esperando que algo cambie a rojo | Dependencias de triggers (Fase 6) agrupan la cascada de alertas de una sola falla |
+| **Resolución de fallas** | Se abre un ticket y alguien ejecuta comandos manuales | Zabbix corre un comando remoto (reiniciar el servicio) en el momento, antes de avisar a una persona |
+| **Gestión de tickets** | Los tickets se crean y categorizan a mano | Un problema de severidad alta abre un ticket solo en GLPI |
+| **Configuraciones** | Entrar por consola/GUI línea por línea | El `config.xml` de FW01 queda versionado en git, con diff entre cambios |
+
+### Auto-remediación
+
+`zabbix/automation/configure_noc.py remediate` crea una *action* de Zabbix que, al disparar un trigger puntual en un host puntual, corre un comando remoto en ese mismo host (vía el agente de Zabbix) antes de avisar a una persona. Ejemplo pensado para probarlo sin esperar una falla real: el servicio *Cola de impresión* (Spooler) en WS01.
+
+```bash
+python3 zabbix/automation/configure_noc.py remediate \
+    --host WS01 --trigger-substr "Spooler" \
+    --command 'powershell -Command "Start-Service Spooler"' --dry-run
+```
+
+[`zabbix/simulate-incidents/toggle-service.ps1`](zabbix/simulate-incidents/toggle-service.ps1) detiene (o arranca) el servicio a mano para disparar el trigger y ver si la auto-remediación actúa.
+
+**Esto necesita `EnableRemoteCommands=1` en el agente del host de destino** (viene en 0 por defecto, a propósito: habilitarlo le da a quien controle Zabbix ejecución de comandos en ese host). Usarlo solo para fallas de bajo riesgo y conocidas, nunca para reiniciar un equipo entero. El mecanismo deja un solo intento (`esc_step_to: 1`): si sigue fallando, pasa a notificar a una persona en vez de reintentar en bucle.
+
+### Gestión de tickets (GLPI)
+
+[`tickets/`](tickets/) levanta GLPI (en la misma VM que Wazuh, no en la netbook, mismo motivo que la Fase 9) y `configure_noc.py tickets` crea el media type que lo conecta con Zabbix: un problema de severidad alta abre un ticket solo, con el host y la descripción del evento. Ver [`tickets/README.md`](tickets/README.md) para generar los tokens de API de GLPI (paso manual, GLPI no trae su API habilitada por defecto).
+
+### IaC para FW01
+
+OPNsense no tiene un motor declarativo como Terraform, así que [`iac/opnsense/`](iac/opnsense/) combina dos cosas:
+
+- [`backup-config.sh`](iac/opnsense/backup-config.sh) descarga el `config.xml` de FW01 por su API, lo sanitiza (contraseñas, claves privadas) y lo deja listo para comitear — poder ver con `git diff` qué cambió entre dos backups, y volver atrás con [`restore-config.sh`](iac/opnsense/restore-config.sh) si algo salió mal.
+- [`iac/opnsense/ansible/`](iac/opnsense/ansible/) es un ejemplo, sin probar, de declarar un puñado de recursos (alias de firewall) con la colección comunitaria `ansibleguy.opnsense`.
+
+Sumado a las Fases 7 y 8 (OUs/usuarios y GPOs por PowerShell) y a esta parte de Zabbix, el lab completo queda descrito como código: AD, GPOs, FW01 y la configuración de Zabbix/tickets, cada uno en su propio formato, pero todos versionados en este repo en vez de vivir solo en la memoria de quien hizo el cambio.
+
+---
+
 ## Problemas encontrados y soluciones
 
 ### 1. VMware sin redes virtuales
@@ -628,13 +675,16 @@ El orden sugerido y los requisitos previos (reglas de FW01, Sysmon instalado, un
 - **Zabbix fuera del host de VMs:** corre en la netbook para que el monitoreo sea independiente de lo que monitorea. Si la PC con las VMs se cae, Zabbix lo detecta y alerta.
 - **Zabbix para métricas, OPNsense/Wazuh para logs:** Zabbix concentra estado y rendimiento de todo el lab en un solo dashboard; el detalle de conexiones permitidas o bloqueadas se consulta en OPNsense (y luego en Wazuh).
 - **Wazuh en una VM aparte, no en la netbook:** el indexer de Wazuh (OpenSearch) pide 4 GB+ de RAM él solo, y la netbook ya se quedó corta de RAM con solo Zabbix (ver problema 10). Separar el SOC del NOC en hardware distinto también evita que un pico de uno tape las métricas del otro.
+- **GLPI junto a Wazuh, no junto a Zabbix:** mismo motivo de RAM que Wazuh; además, tanto GLPI como Wazuh son "destino" de eventos (tickets, alertas de seguridad), así que tiene más sentido agruparlos entre sí que con la fuente de métricas.
+- **Auto-remediación con un solo intento, nunca en bucle:** si el comando remoto no resuelve la falla, lo correcto es escalar a una persona, no reintentar indefinidamente algo que ya se demostró que no funciona.
+- **Config de FW01 versionado en vez de un motor IaC de terceros:** OPNsense no tiene un Terraform/Ansible oficial con cobertura completa; versionar el `config.xml` sanitizado cubre el 100% de la configuración (aunque sin aplicar cambios puntuales), y Ansible queda reservado para los pocos recursos que la colección comunitaria sí cubre bien.
 - **Dependencias de triggers con FW01 como raíz:** se eligió FW01 porque fue la causa real del único incidente multi-alerta que se dio en el lab (Fase 5); si aparece otro patrón de falla en cascada, conviene revisar las dependencias en vez de asumir que esta cadena cubre todos los casos.
 
 ---
 
 ## Próximos pasos
 
-Las Fases 6 a 10 ya tienen scripts y configuración en el repo (ver cada sección más arriba), pero ninguna se corrió todavía contra el hardware real del lab. El orden sugerido para validarlas:
+Las Fases 6 a 11 ya tienen scripts y configuración en el repo (ver cada sección más arriba), pero ninguna se corrió todavía contra el hardware real del lab. El orden sugerido para validarlas:
 
 1. **Fase 6** — correr `configure_noc.py dependencies --dry-run`, revisar el payload, aplicarlo, y recién ahí probar los scripts de `simulate-incidents/` para confirmar que una sola falla (por ejemplo, apagar FW01) genera una sola alerta visible.
 2. **Fase 6** — configurar un bot de Telegram propio y correr `configure_noc.py notify`, completando a mano el `userid` de la *action* como indica el script.
@@ -642,5 +692,8 @@ Las Fases 6 a 10 ya tienen scripts y configuración en el repo (ver cada secció
 4. **Fase 8** — correr `Set-LabGPOs.ps1` y confirmar con `Get-GPOReport` que la política de contraseñas y la auditoría quedaron aplicadas en DC01 y WS01.
 5. **Fase 9** — levantar la VM de Wazuh, generar los certificados, instalar los agentes y Sysmon en DC01/WS01, y apuntar el syslog de FW01.
 6. **Fase 10** — con Wazuh ya recibiendo telemetría, correr los tres escenarios de `attack/` desde KALI01 y completar un `informe-deteccion.md` real.
-7. Generación de tráfico entre equipos (métricas en Zabbix, logs en OPNsense) para tener una línea de base contra la que comparar los incidentes simulados.
-8. Revisar `wazuh/README.md` → "Qué falta validar" antes del paso 5: los nombres de archivo de certificados y las versiones de imagen pueden haber cambiado.
+7. **Fase 11** — habilitar `EnableRemoteCommands` en el agente de WS01 y probar `remediate` con `toggle-service.ps1` antes de confiar en él para una falla real.
+8. **Fase 11** — levantar GLPI en la misma VM que Wazuh, generar los tokens de API y probar `configure_noc.py tickets` desde *Media types → Test* en Zabbix antes de la primera falla real.
+9. **Fase 11** — correr `backup-config.sh` una vez contra FW01 para tener el primer snapshot versionado, y revisar el ejemplo de Ansible (`iac/opnsense/ansible/`) contra la documentación actual de `ansibleguy.opnsense` antes de instalarlo.
+10. Generación de tráfico entre equipos (métricas en Zabbix, logs en OPNsense) para tener una línea de base contra la que comparar los incidentes simulados.
+11. Revisar `wazuh/README.md` → "Qué falta validar" antes del paso 5: los nombres de archivo de certificados y las versiones de imagen pueden haber cambiado.
