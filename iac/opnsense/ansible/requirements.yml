@@ -1,0 +1,8 @@
+---
+# ansible-galaxy collection install -r requirements.yml
+collections:
+  - name: ansibleguy.opnsense
+    # Sin versión fijada a propósito: no se pudo instalar ni probar esta
+    # colección desde esta sesión, así que no hay una versión conocida-buena
+    # para pinnear. Fijar una versión concreta después de probarla una vez
+    # contra FW01 (ver ../README.md, sección 2).
