@@ -1,0 +1,82 @@
+<!--
+  Configuración base de Sysmon para DC01 y WS01 (Fase 9), pensada para
+  alimentar las detecciones de la Fase 10 (fuerza bruta, persistencia,
+  movimiento lateral) sin generar tanto volumen como para saturar la VM de
+  Wazuh. No es una config exhaustiva: para ambientes productivos, reemplazar
+  por SwiftOnSecurity/sysmon-config o olafhartong/sysmon-modular (ver
+  wazuh/README.md).
+
+  Instalar con: Sysmon64.exe -accepteula -i sysmonconfig.xml
+  Actualizar con: Sysmon64.exe -c sysmonconfig.xml
+-->
+<Sysmon schemaversion="4.90">
+  <EventFiltering>
+
+    <!-- 1: creación de procesos. Se excluye ruido conocido de Windows/AV
+         para no inundar el manager; todo lo demás queda. -->
+    <RuleGroup name="" groupRelation="or">
+      <ProcessCreate onmatch="exclude">
+        <Image condition="end with">\WmiPrvSE.exe</Image>
+        <Image condition="end with">\SearchIndexer.exe</Image>
+        <Image condition="end with">\conhost.exe</Image>
+        <Image condition="end with">\backgroundTaskHost.exe</Image>
+      </ProcessCreate>
+    </RuleGroup>
+
+    <!-- 3: conexiones de red salientes. Útil para C2 y movimiento lateral
+         desde la red ATTACK. Se excluye tráfico local/broadcast. -->
+    <RuleGroup name="" groupRelation="or">
+      <NetworkConnect onmatch="exclude">
+        <DestinationIp condition="begin with">127.</DestinationIp>
+        <DestinationIp condition="begin with">169.254.</DestinationIp>
+      </NetworkConnect>
+    </RuleGroup>
+
+    <!-- 6: carga de drivers. Rootkits y algunas herramientas de post-
+         explotación cargan drivers sin firmar. -->
+    <RuleGroup name="" groupRelation="or">
+      <DriverLoad onmatch="exclude">
+        <Signature condition="contains">Microsoft Windows</Signature>
+      </DriverLoad>
+    </RuleGroup>
+
+    <!-- 8: creación de hilos remotos (inyección de procesos). Poco ruido en
+         un uso normal; casi siempre vale la pena mirarlo. -->
+    <RuleGroup name="" groupRelation="or">
+      <CreateRemoteThread onmatch="exclude">
+        <SourceImage condition="end with">\procexp64.exe</SourceImage>
+      </CreateRemoteThread>
+    </RuleGroup>
+
+    <!-- 10: acceso a procesos sensibles (ej. lsass.exe), clave para detectar
+         volcado de credenciales. Solo se registra el acceso a esos procesos
+         puntuales para no generar demasiado volumen. -->
+    <RuleGroup name="" groupRelation="or">
+      <ProcessAccess onmatch="include">
+        <TargetImage condition="end with">\lsass.exe</TargetImage>
+        <TargetImage condition="end with">\winlogon.exe</TargetImage>
+      </ProcessAccess>
+    </RuleGroup>
+
+    <!-- 12-13-14: creación/modificación/borrado de claves y valores de
+         registro. Se incluyen solo las rutas clásicas de persistencia. -->
+    <RuleGroup name="" groupRelation="or">
+      <RegistryEvent onmatch="include">
+        <TargetObject condition="contains">\CurrentVersion\Run</TargetObject>
+        <TargetObject condition="contains">\CurrentVersion\RunOnce</TargetObject>
+        <TargetObject condition="contains">\Services\</TargetObject>
+        <TargetObject condition="contains">\Winlogon\</TargetObject>
+      </RegistryEvent>
+    </RuleGroup>
+
+    <!-- 22: resolución DNS. Ayuda a correlacionar con el tráfico de la red
+         ATTACK (dominios de C2, lookups anómalos). -->
+    <RuleGroup name="" groupRelation="or">
+      <DnsQuery onmatch="exclude">
+        <QueryName condition="end with">.corp.home.arpa</QueryName>
+        <QueryName condition="is">wpad</QueryName>
+      </DnsQuery>
+    </RuleGroup>
+
+  </EventFiltering>
+</Sysmon>

@@ -6,6 +6,14 @@
 # Datos de los contenedores (base de datos de Zabbix)
 zabbix/data/
 
+# Wazuh: datos de los contenedores y certificados TLS generados
+wazuh/data/
+wazuh/config/certs/
+
+# Python
+__pycache__/
+*.pyc
+
 # Archivos del sistema
 .DS_Store
 Thumbs.db
