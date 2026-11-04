@@ -169,7 +169,6 @@ def cmd_maintenance(args):
         "active_since": now,
         "active_till": end,
         "hostids": hostids,
-        "tags_evaltype": 0,
         "timeperiods": [
             {
                 "timeperiod_type": 0,  # una sola vez
@@ -177,8 +176,13 @@ def cmd_maintenance(args):
                 "period": args.minutes * 60,
             }
         ],
-        # 0 = sin recolectar datos durante la ventana (evita "nodata" después).
-        "maintenance_type": 0,
+        # maintenance_type: 0 = CON recolección de datos, 1 = SIN recolección
+        # (documentación de la API de Zabbix). Usamos 1 a propósito: durante
+        # un apagado planificado no tiene sentido que el server siga
+        # intentando sondear hosts que sabemos apagados. "tags_evaltype" se
+        # sacó del payload: la API solo lo acepta con maintenance_type 0, y
+        # no estamos filtrando por tags.
+        "maintenance_type": 1,
     }
     if args.dry_run:
         print("--dry-run: payload de maintenance.create:")
