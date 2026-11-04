@@ -194,66 +194,61 @@ def cmd_maintenance(args):
 
 
 def cmd_notify(args):
+    """Validado contra un Zabbix 7.0 real (ver README, Fase 6): usa el media
+    type "Telegram" que **ya viene incorporado** en Zabbix, en vez de crear
+    uno nuevo desde cero. Un intento anterior de este script creaba un media
+    type propio con un script de webhook de relleno, que no mandaba nada de
+    verdad — se sacó por completo.
+
+    Parámetros reales del media type incorporado (confirmados a mano en la
+    GUI, difieren de lo que un primer intento de este script asumía):
+    `api_token` (no `bot_token`), `api_parse_mode`, y `api_chat_id` que se
+    completa solo con `{ALERT.SENDTO}` — por eso el chat_id se manda en el
+    "Send to" del usuario (user.update), no como parámetro del media type.
+    """
     url, token = args.url, args.token
+
+    mediatypes = api_call(url, token, "mediatype.get", {"filter": {"name": ["Telegram"]}, "output": ["mediatypeid"]})
+    if not mediatypes:
+        print("No se encontró el media type 'Telegram' incorporado en esta instalación de Zabbix.", file=sys.stderr)
+        print("Revisar Alerts -> Media types: viene con Zabbix desde la 5.0, pero puede faltar en instalaciones mínimas.", file=sys.stderr)
+        sys.exit(1)
+    mediatypeid = mediatypes[0]["mediatypeid"]
+
     mediatype_params = {
-        "name": "Telegram - Lab NOC",
-        "type": 4,  # webhook
-        "script": TELEGRAM_WEBHOOK_SCRIPT,
+        "mediatypeid": mediatypeid,
+        "status": 0,  # 0 = enabled
         "parameters": [
-            {"name": "bot_token", "value": args.telegram_token},
-            {"name": "chat_id", "value": args.telegram_chat_id},
-            {"name": "alert_subject", "value": "{ALERT.SUBJECT}"},
-            {"name": "alert_message", "value": "{ALERT.MESSAGE}"},
-        ],
-        "process_tags": 1,
-        "message_templates": [
-            {
-                "eventsource": 0,  # trigger
-                "recovery": 0,  # problema
-                "subject": "PROBLEMA: {EVENT.NAME}",
-                "message": "{EVENT.SEVERITY}: {EVENT.NAME}\nHost: {HOST.NAME}\nHora: {EVENT.TIME} {EVENT.DATE}",
-            },
-            {
-                "eventsource": 0,
-                "recovery": 1,  # resuelto
-                "subject": "RESUELTO: {EVENT.NAME}",
-                "message": "Resuelto en {HOST.NAME} a las {EVENT.RECOVERY.TIME}",
-            },
+            {"name": "api_token", "value": args.telegram_token},
+            {"name": "api_parse_mode", "value": ""},  # vacío = texto plano
         ],
     }
-    if args.dry_run:
-        print("--dry-run: payload de mediatype.create:")
-        print(json.dumps(mediatype_params, indent=2))
-    else:
-        mediatype = api_call(url, token, "mediatype.create", mediatype_params)
-        mediatypeid = mediatype["mediatypeids"][0]
-        print(f"Media type creado: {mediatypeid}")
 
-        users = api_call(url, token, "user.get", {"filter": {"username": [args.user]}, "output": ["userid"]})
-        if not users:
-            raise RuntimeError(f"No se encontró el usuario Zabbix '{args.user}'")
-        userid = users[0]["userid"]
-        api_call(url, token, "user.update", {
-            "userid": userid,
-            "medias": [{
-                "mediatypeid": mediatypeid,
-                "sendto": [args.telegram_chat_id],
-                "active": 0,
-                "severity": 60,  # Average, High y Disaster (bits 2+3+4)
-                "period": "1-7,00:00-24:00",
-            }],
-        })
-        print(f"Medio de notificación asociado al usuario '{args.user}'.")
+    users = api_call(url, token, "user.get", {"filter": {"username": [args.user]}, "output": ["userid"]})
+    if not users:
+        raise RuntimeError(f"No se encontró el usuario Zabbix '{args.user}'")
+    userid = users[0]["userid"]
+
+    user_media_params = {
+        "userid": userid,
+        "medias": [{
+            "mediatypeid": mediatypeid,
+            "sendto": [args.telegram_chat_id],
+            "active": 0,  # 0 = enabled
+            "severity": 60,  # bits de Average + High + Disaster
+            "period": "1-7,00:00-24:00",
+        }],
+    }
 
     action_params = {
         "name": "Notificar fallas criticas del NOC",
-        "eventsource": 0,
+        "eventsource": 0,  # trigger
         "status": 0,
         "esc_period": "1h",
-        "pause_suppressed": 1,  # respeta las ventanas de mantenimiento
+        "pause_suppressed": 1,  # respeta la ventana de mantenimiento de la Fase 6
         "notify_if_canceled": 1,
         "conditions": [
-            {"conditiontype": 4, "operator": 5, "value": "3"},  # severity >= High (3)
+            {"conditiontype": 4, "operator": 5, "value": "3"},  # severity >= High
         ],
         "operations": [
             {
@@ -261,30 +256,34 @@ def cmd_notify(args):
                 "esc_step_from": 1,
                 "esc_step_to": 1,
                 "evaltype": 0,
-                "opmessage": {"default_msg": 1, "mediatypeid": "0"},
+                "opmessage": {"default_msg": 1, "mediatypeid": mediatypeid},
                 "opmessage_grp": [],
-                "opmessage_usr": [{"userid": "<completar con user.get>"}],
+                "opmessage_usr": [{"userid": userid}],
             }
         ],
     }
+
     if args.dry_run:
-        print("\n--dry-run: payload de action.create (completar userid antes de aplicar):")
+        print(f"Media type 'Telegram' encontrado: {mediatypeid}")
+        print("\n--dry-run: payload de mediatype.update (habilita + fija api_token):")
+        print(json.dumps(mediatype_params, indent=2))
+        print("\n--dry-run: payload de user.update (asocia el chat_id al usuario):")
+        print(json.dumps(user_media_params, indent=2))
+        print("\n--dry-run: payload de action.create:")
         print(json.dumps(action_params, indent=2))
         return
-    print("\nPara crear la Action, completar opmessage_usr.userid con el id de "
-          f"'{args.user}' y correr action.create manualmente (o editar este script "
-          "y volver a ejecutar con --execute-action una vez verificado el media type).")
 
+    api_call(url, token, "mediatype.update", mediatype_params)
+    print(f"Media type 'Telegram' (id {mediatypeid}) habilitado con el token dado.")
 
-TELEGRAM_WEBHOOK_SCRIPT = """
-// Mismo script que trae el media type "Telegram" por defecto de Zabbix >= 5.0.
-// Se referencia aquí en vez de copiarlo para no desincronizarse: al crear el
-// media type a mano en la GUI (Alerts -> Media types -> Telegram), exportarlo
-// y pegar su "script" acá, o dejar que mediatype.create falle y crear el
-// media type desde el template integrado y solo correr `notify --dry-run`
-// para ver los parámetros a copiar.
-return 'ver Alerts -> Media types -> Telegram en la GUI de Zabbix';
-""".strip()
+    api_call(url, token, "user.update", user_media_params)
+    print(f"Chat {args.telegram_chat_id} asociado al usuario '{args.user}'.")
+
+    api_call(url, token, "action.create", action_params)
+    print("Action 'Notificar fallas criticas del NOC' creada (severidad >= High).")
+    print("\nProbar antes de confiar en ella: Alerts -> Media types -> Telegram -> Test")
+    print("(elegir Event source = Trigger, o escribir 0 si el campo pide el número a mano,")
+    print("sin llaves ni comillas alrededor).")
 
 
 def cmd_remediate(args):

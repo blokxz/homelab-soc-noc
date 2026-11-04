@@ -160,7 +160,7 @@ La separación la hace **FW01 (OPNsense)**, una VM con tres placas de red, cada 
 - [ ] **NOC – Simulación de incidentes y tráfico** entre equipos (reinicio y servicio detenido ya validados en el lab; scripts de CPU/disco listos en `zabbix/simulate-incidents/`, Fase 6, falta correrlos; falta generación de tráfico entre equipos)
 - [x] **NOC – Dashboard unificado** (*single pane of glass*): FW01, DC01, WS01 y router en una sola vista
 - [x] **IA aplicada al NOC**: Claude + MCP de Zabbix, en modo solo lectura
-- [ ] **NOC – Dependencias de triggers y notificaciones** (Fase 6: script listo en `zabbix/automation/`, falta correrlo contra el Zabbix real)
+- [x] **NOC – Dependencias de triggers y notificaciones** (Fase 6: validado contra el Zabbix real del lab — se apagó FW01 y solo generó esa alerta; ventana de mantenimiento creada; mensaje de Telegram confirmado)
 - [ ] **DC01 – Parte 3**: OUs y alta masiva de usuarios con PowerShell (Fase 7: script listo en `scripts/ad-bulk/`, falta correrlo contra DC01)
 - [ ] GPOs y políticas de seguridad (Fase 8: script listo en `scripts/gpo/`, falta correrlo y validar con `Get-GPOReport`)
 - [ ] **SOC**: Wazuh + Sysmon (Fase 9: `docker-compose.yml` y config de Sysmon listos en `wazuh/`, falta desplegar la VM)
@@ -455,7 +455,22 @@ Se agrega como paso 0 antes de "Apagar (de adentro hacia afuera)".
 
 ### Notificaciones
 
-`configure_noc.py notify` crea un media type de Telegram (webhook, sin necesidad de un servidor de correo) y una action que notifica ante cualquier problema de severidad Alta o superior, respetando la ventana de mantenimiento (`pause_suppressed`). El payload de la *action* queda documentado en el script para completarlo a mano con el `userid` del destinatario, porque no se pudo probar contra un Zabbix real antes de escribirlo.
+> **Validado contra el Zabbix real del lab.** Un primer intento de `configure_noc.py notify` creaba un media type de Telegram desde cero, con un script de webhook de relleno que no mandaba nada — se corrigió para usar el media type "Telegram" que **ya viene incorporado** en Zabbix.
+
+```bash
+python3 zabbix/automation/configure_noc.py notify \
+    --telegram-token <el token que te dio @BotFather> \
+    --telegram-chat-id <tu chat_id, ver más abajo> \
+    --user Admin
+```
+
+Habilita ese media type, le fija el token, asocia el `chat_id` al usuario indicado y crea la *action* de severidad ≥ Alta, respetando la ventana de mantenimiento (`pause_suppressed`).
+
+**Cómo conseguir el `chat_id`:** mandale cualquier mensaje a tu bot nuevo desde Telegram y abrí `https://api.telegram.org/bot<TU_TOKEN>/getUpdates` en el navegador — el número en `"chat":{"id":...}` es el `chat_id`.
+
+**Dos tropiezos reales al validarlo** (quedan documentados por si la GUI de tu versión los repite):
+- El campo del token en el media type se llama **`api_token`**, no `bot_token` — si lo editás a mano en *Alerts → Media types → Telegram*, es ese el campo a completar.
+- En el diálogo de **Test**, el campo `event_source` pide un **número del 0 al 4** (0 = Trigger), sin llaves ni comillas alrededor — escribir `{0}` en vez de `0` tira *"Incorrect event_source parameter"*.
 
 ### Simulación de incidentes
 
@@ -686,14 +701,13 @@ Sumado a las Fases 7 y 8 (OUs/usuarios y GPOs por PowerShell) y a esta parte de 
 
 Las Fases 6 a 11 ya tienen scripts y configuración en el repo (ver cada sección más arriba), pero ninguna se corrió todavía contra el hardware real del lab. El orden sugerido para validarlas:
 
-1. **Fase 6** — correr `configure_noc.py dependencies --dry-run`, revisar el payload, aplicarlo, y recién ahí probar los scripts de `simulate-incidents/` para confirmar que una sola falla (por ejemplo, apagar FW01) genera una sola alerta visible.
-2. **Fase 6** — configurar un bot de Telegram propio y correr `configure_noc.py notify`, completando a mano el `userid` de la *action* como indica el script.
-3. **Fase 7** — completar un CSV real de usuarios y correr `New-LabOUsAndUsers.ps1`, habilitar las cuentas que correspondan.
-4. **Fase 8** — correr `Set-LabGPOs.ps1` y confirmar con `Get-GPOReport` que la política de contraseñas y la auditoría quedaron aplicadas en DC01 y WS01.
-5. **Fase 9** — levantar la VM de Wazuh, generar los certificados, instalar los agentes y Sysmon en DC01/WS01, y apuntar el syslog de FW01.
-6. **Fase 10** — con Wazuh ya recibiendo telemetría, correr los tres escenarios de `attack/` desde KALI01 y completar un `informe-deteccion.md` real.
-7. **Fase 11** — habilitar `EnableRemoteCommands` en el agente de WS01 y probar `remediate` con `toggle-service.ps1` antes de confiar en él para una falla real.
-8. **Fase 11** — levantar GLPI en la misma VM que Wazuh, generar los tokens de API y probar `configure_noc.py tickets` desde *Media types → Test* en Zabbix antes de la primera falla real.
-9. **Fase 11** — correr `backup-config.sh` una vez contra FW01 para tener el primer snapshot versionado, y revisar el ejemplo de Ansible (`iac/opnsense/ansible/`) contra la documentación actual de `ansibleguy.opnsense` antes de instalarlo.
-10. Generación de tráfico entre equipos (métricas en Zabbix, logs en OPNsense) para tener una línea de base contra la que comparar los incidentes simulados.
-11. Revisar `wazuh/README.md` → "Qué falta validar" antes del paso 5: los nombres de archivo de certificados y las versiones de imagen pueden haber cambiado.
+1. ~~**Fase 6** — dependencias, mantenimiento y Telegram.~~ **Hecho y validado** contra el Zabbix real del lab (ver la sección Fase 6 más arriba). Falta probar `simulate-incidents/` (CPU, disco) para completar el resto del ciclo de incidentes.
+2. **Fase 7** — completar un CSV real de usuarios y correr `New-LabOUsAndUsers.ps1`, habilitar las cuentas que correspondan.
+3. **Fase 8** — correr `Set-LabGPOs.ps1` y confirmar con `Get-GPOReport` que la política de contraseñas y la auditoría quedaron aplicadas en DC01 y WS01.
+4. **Fase 9** — levantar la VM de Wazuh, generar los certificados, instalar los agentes y Sysmon en DC01/WS01, y apuntar el syslog de FW01.
+5. **Fase 10** — con Wazuh ya recibiendo telemetría, correr los tres escenarios de `attack/` desde KALI01 y completar un `informe-deteccion.md` real.
+6. **Fase 11** — habilitar `EnableRemoteCommands` en el agente de WS01 y probar `remediate` con `toggle-service.ps1` antes de confiar en él para una falla real.
+7. **Fase 11** — levantar GLPI en la misma VM que Wazuh, generar los tokens de API y probar `configure_noc.py tickets` desde *Media types → Test* en Zabbix antes de la primera falla real.
+8. **Fase 11** — correr `backup-config.sh` una vez contra FW01 para tener el primer snapshot versionado, y revisar el ejemplo de Ansible (`iac/opnsense/ansible/`) contra la documentación actual de `ansibleguy.opnsense` antes de instalarlo.
+9. Generación de tráfico entre equipos (métricas en Zabbix, logs en OPNsense) para tener una línea de base contra la que comparar los incidentes simulados.
+10. Revisar `wazuh/README.md` → "Qué falta validar" antes del paso 4: los nombres de archivo de certificados y las versiones de imagen pueden haber cambiado.
