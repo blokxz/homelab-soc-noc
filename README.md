@@ -4,7 +4,7 @@ Laboratorio propio que simula la red de una empresa chica para practicar tareas 
 
 > Punto de partida: el proyecto [Active Directory and PowerShell Automation](https://github.com/techgneek/Active-Directory-and-Powershell-Automation) de techgneek. Lo extendí con un firewall dedicado, una red de ataque aislada, un SIEM (Wazuh) y monitoreo NOC (Zabbix).
 
-> Proyecto vinculado: [viewDI](https://github.com/blokxz/viewDI), una interfaz de terminal propia para administrar y monitorear contenedores **Docker** e **Incus**. En este lab sirve para manejar desde la netbook los contenedores del NOC (Zabbix y, más adelante, Wazuh): estado, logs, recursos y reinicios. Para un uso solo de monitoreo: `viewdi --read-only`.
+> Proyecto vinculado: [viewDI](https://github.com/blokxz/viewDI), una interfaz de terminal propia para administrar y monitorear contenedores **Docker** e **Incus**. En este lab sirve para manejar desde la netbook los contenedores de Zabbix: estado, logs, recursos y reinicios. Wazuh corre en una VM aparte (ver Fase 9) y no pasa por viewDI. Para un uso solo de monitoreo: `viewdi --read-only`.
 
 ---
 
@@ -20,8 +20,19 @@ Laboratorio propio que simula la red de una empresa chica para practicar tareas 
 │   └── claude_desktop_config.example.json  # Conexión de Claude Desktop a Zabbix (sin token)
 ├── zabbix/
 │   ├── docker-compose.yml    # Zabbix 7.0 LTS: PostgreSQL + server + web + agente
-│   └── .env.example          # Plantilla de variables (copiar a .env)
-└── img/                      # Diagramas (2D e isométrico) y capturas del lab
+│   ├── .env.example          # Plantilla de variables (copiar a .env)
+│   ├── automation/
+│   │   └── configure_noc.py  # Dependencias de triggers, mantenimiento y notificación (Fase 6)
+│   └── simulate-incidents/   # Scripts para generar incidentes de prueba (Fase 6)
+├── scripts/
+│   ├── ad-bulk/               # OUs y alta masiva de usuarios por PowerShell (Fase 7)
+│   └── gpo/                   # GPOs de contraseñas, bloqueo y auditoría (Fase 8)
+├── wazuh/                     # Wazuh 4.9 (SOC) y config de Sysmon (Fase 9)
+│   ├── docker-compose.yml
+│   ├── generate-certs.yml
+│   └── sysmon/sysmonconfig.xml
+├── attack/                    # Simulaciones desde KALI01 y plantilla de reporte (Fase 10)
+└── img/                       # Diagramas (2D e isométrico) y capturas del lab
     ├── README.md             # Lista de imágenes y capturas pendientes
     └── ia-dashboard.svg      # Fuente del dashboard generado por Claude (Fase 5)
 ```
@@ -144,14 +155,14 @@ La separación la hace **FW01 (OPNsense)**, una VM con tres placas de red, cada 
 - [x] **DC01 – Parte 2**: DHCP, usuario de prueba
 - [x] **WS01**: Windows 11 unido al dominio
 - [x] **NOC – Zabbix 7.0 LTS** en la netbook (Docker) con agentes en DC01, WS01 y FW01
-- [ ] **NOC – Simulación de incidentes y tráfico** entre equipos (ya validado: host reiniciado y servicio detenido; faltan CPU, disco, mantenimiento y generación de tráfico)
+- [ ] **NOC – Simulación de incidentes y tráfico** entre equipos (reinicio y servicio detenido ya validados en el lab; scripts de CPU/disco listos en `zabbix/simulate-incidents/`, Fase 6, falta correrlos; falta generación de tráfico entre equipos)
 - [x] **NOC – Dashboard unificado** (*single pane of glass*): FW01, DC01, WS01 y router en una sola vista
 - [x] **IA aplicada al NOC**: Claude + MCP de Zabbix, en modo solo lectura
-- [ ] **NOC – Dependencias de triggers y notificaciones**
-- [ ] **DC01 – Parte 3**: OUs y alta masiva de usuarios con PowerShell
-- [ ] GPOs y políticas de seguridad
-- [ ] **SOC**: Wazuh + Sysmon
-- [ ] **Red ATTACK**: Kali, simulaciones y reportes de detección
+- [ ] **NOC – Dependencias de triggers y notificaciones** (Fase 6: script listo en `zabbix/automation/`, falta correrlo contra el Zabbix real)
+- [ ] **DC01 – Parte 3**: OUs y alta masiva de usuarios con PowerShell (Fase 7: script listo en `scripts/ad-bulk/`, falta correrlo contra DC01)
+- [ ] GPOs y políticas de seguridad (Fase 8: script listo en `scripts/gpo/`, falta correrlo y validar con `Get-GPOReport`)
+- [ ] **SOC**: Wazuh + Sysmon (Fase 9: `docker-compose.yml` y config de Sysmon listos en `wazuh/`, falta desplegar la VM)
+- [ ] **Red ATTACK**: Kali, simulaciones y reportes de detección (Fase 10: scripts listos en `attack/`, falta correrlos y completar un informe real)
 
 ---
 
@@ -408,6 +419,134 @@ Es el caso que resuelven las **dependencias de triggers** (próximo paso): una f
 
 ---
 
+## Fase 6 – Dependencias de triggers, notificaciones y simulación de incidentes
+
+> **Estado:** scripts y configuración listos en el repo; falta correrlos contra el Zabbix real del lab y validar el resultado (no hay acceso a la netbook desde donde se escribió esto).
+
+Cierra lo que dejó abierto la Fase 5: que una sola falla (FW01 caído) produzca una sola alerta, no seis, y que el lab pueda avisar solo en vez de depender de que alguien mire el dashboard.
+
+### Dependencias de triggers
+
+[`zabbix/automation/configure_noc.py`](zabbix/automation/configure_noc.py) usa la API de Zabbix para encadenar los triggers según la causalidad real que encontró la IA en la Fase 5: el trigger "Zabbix agent is not available" de FW01 es la raíz, y de él dependen los de DC01/WS01 ("Active checks are not available") y el de "More than N items missing data" del Zabbix server. Con las dependencias cargadas, si cae FW01 los triggers que dependen de él no vuelven a abrir un problema nuevo mientras la raíz sigue activa.
+
+```bash
+export ZABBIX_URL="http://192.168.1.39:8080"
+export ZABBIX_ADMIN_TOKEN="<token de un usuario Admin, no el mcp-claude de la Fase 5>"
+python3 zabbix/automation/configure_noc.py dependencies --dry-run   # revisar antes de aplicar
+python3 zabbix/automation/configure_noc.py dependencies
+```
+
+Necesita un usuario Admin de Zabbix, distinto del `mcp-claude` de solo lectura: la separación de la Fase 5 se mantiene, la IA sigue sin poder escribir en Zabbix.
+
+### Ventana de mantenimiento para los apagados planeados
+
+El mismo script abre una ventana de mantenimiento puntual sobre FW01/DC01/WS01 ("sin recolectar datos"), para que apagar el lab a propósito (ver "Operación diaria") no genere alertas:
+
+```bash
+python3 zabbix/automation/configure_noc.py maintenance --minutes 180
+```
+
+Se agrega como paso 0 antes de "Apagar (de adentro hacia afuera)".
+
+### Notificaciones
+
+`configure_noc.py notify` crea un media type de Telegram (webhook, sin necesidad de un servidor de correo) y una action que notifica ante cualquier problema de severidad Alta o superior, respetando la ventana de mantenimiento (`pause_suppressed`). El payload de la *action* queda documentado en el script para completarlo a mano con el `userid` del destinatario, porque no se pudo probar contra un Zabbix real antes de escribirlo.
+
+### Simulación de incidentes
+
+[`zabbix/simulate-incidents/`](zabbix/simulate-incidents/) tiene los scripts que faltaban para completar el ciclo completo (ya se había validado con un reinicio y un servicio detenido, ver Fase 4):
+
+| Script | Dónde correrlo | Qué prueba |
+|---|---|---|
+| `cpu-stress.ps1` | DC01, WS01 | Trigger de CPU |
+| `disk-fill.ps1` | DC01, WS01 | Trigger de espacio en disco |
+| `cpu-stress-freebsd.sh` | FW01 (shell de consola) | Item calculado `cpu.util.total` |
+
+Los tres se limpian solos (borran el archivo de prueba, matan los procesos de carga) al terminar el tiempo pedido o si se interrumpen.
+
+---
+
+## Fase 7 – DC01 Parte 3: OUs y alta masiva de usuarios con PowerShell
+
+> **Estado:** script listo en el repo; falta correrlo contra el DC01 real y confirmar el alta en ADUC.
+
+[`scripts/ad-bulk/New-LabOUsAndUsers.ps1`](scripts/ad-bulk/New-LabOUsAndUsers.ps1) reemplaza el alta manual por ADUC que se usó para el usuario de prueba (`uprueba`, Fase 2) por un proceso repetible:
+
+- Crea la estructura `Lab/Soporte`, `Lab/Redes` y `Lab/Seguridad` bajo `corp.home.arpa` (idempotente: si una OU ya existe, la reutiliza).
+- Da de alta en bloque los usuarios de un CSV ([`usuarios.csv.example`](scripts/ad-bulk/usuarios.csv.example) trae el formato), cada uno en su OU, con contraseña aleatoria, **deshabilitado** y forzado a cambiarla en el primer inicio de sesión — mismo criterio que se usó a mano con `uprueba`.
+
+```powershell
+Copy-Item usuarios.csv.example usuarios.csv   # editar con los usuarios reales
+.\New-LabOUsAndUsers.ps1 -CsvPath .\usuarios.csv
+```
+
+Habilitar las cuentas después de revisarlas (`Enable-ADAccount`), para no dar de alta usuarios activos sin mirar el CSV antes.
+
+---
+
+## Fase 8 – GPOs y políticas de seguridad
+
+> **Estado:** script listo en el repo, sin correr contra un DC01 real; la manipulación directa de `GptTmpl.inf` que usa para la política de contraseñas es una técnica conocida pero no se pudo validar en este lab. Antes de depender de ella, confirmar con `Get-GPOReport` que los valores quedaron aplicados como se espera, o aplicar la política de contraseñas a mano desde *Group Policy Management* (Computer Configuration → Policies → Windows Settings → Security Settings → Account Policies) si el script no se comporta como se documenta.
+
+[`scripts/gpo/Set-LabGPOs.ps1`](scripts/gpo/Set-LabGPOs.ps1) crea y vincula:
+
+- **Lab - Politica de contrasenas** (vinculada en el dominio): longitud mínima 12, complejidad, antigüedad máxima 90 días, historial de 12 contraseñas y bloqueo tras 5 intentos fallidos en 15 minutos. Password Policy y Account Lockout Policy viven en la misma GPO a propósito: en AD solo se puede aplicar una de cada por dominio (la de mayor prioridad gana), así que separarlas en dos GPOs distintas termina en que una pisa a la otra.
+- **Lab - Auditoria avanzada** (vinculada en la OU `Lab`, creada en la Fase 7): habilita las subcategorías de auditoría que va a necesitar Wazuh en la Fase 9 — validación de credenciales, logon, bloqueo de cuenta, gestión de grupos y usuarios, uso de privilegios sensibles.
+
+```powershell
+.\Set-LabGPOs.ps1
+gpupdate /force                                          # en DC01 y en los equipos del dominio
+Get-GPOReport -All -ReportType Html -Path gpo-report.html # para confirmar los valores aplicados
+```
+
+---
+
+## Fase 9 – SOC: Wazuh + Sysmon
+
+> **Estado:** `docker-compose.yml`, generación de certificados y config de Sysmon listos en el repo; no se probaron contra una instalación real. Ver "Qué falta validar" en [`wazuh/README.md`](wazuh/README.md) antes de desplegar.
+
+A diferencia de Zabbix, **Wazuh no corre en la netbook**: el indexer (OpenSearch) pide 4 GB+ de RAM él solo, y la netbook ya tuvo un incidente real de swap con solo Zabbix arriba (ver problema 10, más abajo). Corre en una VM Linux aparte en el host de VMware — coherente con la decisión de diseño "Zabbix para métricas, OPNsense/Wazuh para logs".
+
+```
+PC Windows (VMware)
+┌──────────────────────────────┐
+│ VM Wazuh (Linux, Docker)     │
+│   indexer + manager + dashboard
+└──────────────────────────────┘
+        ▲ agentes (1514/1515)         ▲ syslog (514/UDP)
+        │                              │
+     DC01 / WS01                      FW01 (OPNsense)
+```
+
+Instalación, agentes y la configuración de Sysmon para DC01/WS01 están documentados en [`wazuh/README.md`](wazuh/README.md). Resumen:
+
+1. Levantar la VM, generar los certificados TLS y `docker compose up -d` (ver el README de la carpeta).
+2. Instalar el agente de Wazuh en DC01 y WS01 (aparte del agente de Zabbix: métricas y seguridad quedan separadas).
+3. Instalar Sysmon con [`wazuh/sysmon/sysmonconfig.xml`](wazuh/sysmon/sysmonconfig.xml): procesos, conexiones de red, carga de drivers, hilos remotos, acceso a `lsass.exe`/`winlogon.exe` y cambios de registro en rutas de persistencia — la telemetría que necesita la Fase 10.
+4. Apuntar el syslog de FW01 (y Suricata, si se instala) a la VM de Wazuh.
+
+Igual que DC01 y WS01 con Zabbix, están detrás del NAT de FW01: la forma más simple es poner la VM de Wazuh directamente en la red `corp` de VMware, para que los agentes la alcancen sin pasar por NAT.
+
+---
+
+## Fase 10 – Red ATTACK: Kali, simulaciones y reportes de detección
+
+> **Estado:** scripts listos en el repo, pensados para correr desde KALI01 contra CORP; no se ejecutaron contra el lab real. Antes de usarlos, confirmar que la regla "ATTACK → 192.168.0.0/16: Bloquear" está aplicada (ver "Política de firewall", más arriba) para que nada salga hacia la red de casa.
+
+[`attack/`](attack/) tiene tres escenarios chicos, pensados para generar telemetría y practicar detección, no para explotar nada de verdad:
+
+| Script | Simula | Qué debería ver Wazuh |
+|---|---|---|
+| [`recon.sh`](attack/recon.sh) | Descubrimiento de hosts y puertos en CORP (`nmap`) | Base para correlacionar los pasos siguientes |
+| [`bruteforce-rdp.sh`](attack/bruteforce-rdp.sh) | Fuerza bruta de RDP contra WS01 (`hydra` + wordlist chica) | Varios 4625 seguidos de un 4624 desde la misma IP |
+| [`persist-registry.ps1`](attack/persist-registry.ps1) | Persistencia vía `Run` key, ya "dentro" de WS01 | Evento Sysmon 13 sobre `CurrentVersion\Run` |
+
+[`attack/informe-deteccion.md`](attack/informe-deteccion.md) es la plantilla para documentar cada corrida: línea de tiempo, qué disparó en Wazuh, qué no se detectó y por qué, y causa raíz — mismo criterio que usó la IA en la Fase 5 para los seis problemas de Zabbix.
+
+El orden sugerido y los requisitos previos (reglas de FW01, Sysmon instalado, un usuario de prueba con una contraseña de la wordlist) están en [`attack/README.md`](attack/README.md).
+
+---
+
 ## Problemas encontrados y soluciones
 
 ### 1. VMware sin redes virtuales
@@ -488,13 +627,20 @@ Es el caso que resuelven las **dependencias de triggers** (próximo paso): una f
 - **Red ATTACK aislada:** permite practicar ataques contra CORP sin exponer la red doméstica.
 - **Zabbix fuera del host de VMs:** corre en la netbook para que el monitoreo sea independiente de lo que monitorea. Si la PC con las VMs se cae, Zabbix lo detecta y alerta.
 - **Zabbix para métricas, OPNsense/Wazuh para logs:** Zabbix concentra estado y rendimiento de todo el lab en un solo dashboard; el detalle de conexiones permitidas o bloqueadas se consulta en OPNsense (y luego en Wazuh).
+- **Wazuh en una VM aparte, no en la netbook:** el indexer de Wazuh (OpenSearch) pide 4 GB+ de RAM él solo, y la netbook ya se quedó corta de RAM con solo Zabbix (ver problema 10). Separar el SOC del NOC en hardware distinto también evita que un pico de uno tape las métricas del otro.
+- **Dependencias de triggers con FW01 como raíz:** se eligió FW01 porque fue la causa real del único incidente multi-alerta que se dio en el lab (Fase 5); si aparece otro patrón de falla en cascada, conviene revisar las dependencias en vez de asumir que esta cadena cubre todos los casos.
 
 ---
 
 ## Próximos pasos
 
-1. Simulación de incidentes en Zabbix (servicio caído, CPU, disco, host caído, mantenimiento) con su ciclo completo de operación.
-2. Generación de tráfico entre equipos para leer métricas en Zabbix y logs en OPNsense.
-3. Script de PowerShell propio para OUs y alta masiva de usuarios.
-4. GPOs: política de contraseñas, restricciones por OU.
-5. Wazuh + Sysmon y la red de ataque.
+Las Fases 6 a 10 ya tienen scripts y configuración en el repo (ver cada sección más arriba), pero ninguna se corrió todavía contra el hardware real del lab. El orden sugerido para validarlas:
+
+1. **Fase 6** — correr `configure_noc.py dependencies --dry-run`, revisar el payload, aplicarlo, y recién ahí probar los scripts de `simulate-incidents/` para confirmar que una sola falla (por ejemplo, apagar FW01) genera una sola alerta visible.
+2. **Fase 6** — configurar un bot de Telegram propio y correr `configure_noc.py notify`, completando a mano el `userid` de la *action* como indica el script.
+3. **Fase 7** — completar un CSV real de usuarios y correr `New-LabOUsAndUsers.ps1`, habilitar las cuentas que correspondan.
+4. **Fase 8** — correr `Set-LabGPOs.ps1` y confirmar con `Get-GPOReport` que la política de contraseñas y la auditoría quedaron aplicadas en DC01 y WS01.
+5. **Fase 9** — levantar la VM de Wazuh, generar los certificados, instalar los agentes y Sysmon en DC01/WS01, y apuntar el syslog de FW01.
+6. **Fase 10** — con Wazuh ya recibiendo telemetría, correr los tres escenarios de `attack/` desde KALI01 y completar un `informe-deteccion.md` real.
+7. Generación de tráfico entre equipos (métricas en Zabbix, logs en OPNsense) para tener una línea de base contra la que comparar los incidentes simulados.
+8. Revisar `wazuh/README.md` → "Qué falta validar" antes del paso 5: los nombres de archivo de certificados y las versiones de imagen pueden haber cambiado.
